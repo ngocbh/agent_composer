@@ -1,0 +1,22 @@
+# hello — the smallest agent flow: one AGENT, a string in and a string out.
+#
+# Run it with:  ac run examples/hello.yaml --input name=Ada
+
+id: hello
+name: hello
+description: Greet someone with a short, friendly one-liner.
+
+input:
+  name: str
+
+nodes:
+  greet:
+    kind: agent
+    input:
+      name: ${input.name}
+    output: str
+    prompt: |-
+      Write a short, warm one-sentence greeting addressed to ${name}.
+      Just the greeting, no preamble.
+
+output: ${greet.output}

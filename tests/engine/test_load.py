@@ -1,0 +1,299 @@
+"""Integration tests for the top-level loader.
+
+`load_flow(text) -> LoadedFlow` wires every prior slice into one runnable
+`CompiledFlow` + the flow-input decls + the boundary/post-terminal assert split. The
+load-test set is the seeds: flat (00/01), case (02/06), the
+arithmetic asserts (10), anchors (11), MODEL (07), AGENT knobs (14), nested records +
+record-typed inputs (13), the rich integration (18), and every-binding-stance (19).
+
+EXCLUDED (recorded reasons):
+  (15/16 + errors/e04/e05 — the dropped `kind: match`/payload-union design — were deleted;
+  tagged data is modelled as a discriminant record + `case … on <field>`.)
+- 04/05 — `call` nodes need a child resolver (asserted loud below; the resolver'd
+  load+compile path lives in tests/engine/test_ref_map.py).
+"""
+
+from pathlib import Path
+
+import pytest
+
+from agent_compose.compile.model import END_ID, START_ID, CompiledFlow
+from agent_compose.nodes.agent import AgentNode
+from agent_compose.nodes.code import CodeNode
+from agent_compose.nodes.if_else import IfElseNode
+from agent_compose.nodes.model import ModelNode
+from agent_compose.state.segments import SegmentType
+from agent_compose.compose import LoadedFlow, LoadError, load_flow
+
+_SEEDS = Path(__file__).resolve().parents[2] / "tests" / "seeds"
+
+# Each loadable seed must load to a LoadedFlow.
+_LOADABLE = ["00", "01", "02", "06", "07", "09", "10", "11", "12", "13", "14", "17", "18", "19", "20", "21", "22", "23"]
+_SEED_FILES = {
+    "00": "00-hello-agent.yaml",
+    "01": "01-structured-agent.yaml",
+    "02": "02-case.yaml",
+    "06": "06-case-on.yaml",
+    "07": "07-model-rating.yaml",
+    # 09 — ${...} operator forms incl. the ${system.run_id} ambient (now allow-listed).
+    "09": "09-interpolation-ops.yaml",
+    # 12 — depends_on/runs_after ordering edges (feature D); now wired, not parsed-only.
+    "12": "12-depends-on.yaml",
+    "10": "10-asserts-arithmetic.yaml",
+    "11": "11-reuse-anchors.yaml",
+    "13": "13-types-objects.yaml",
+    "14": "14-agent-tools.yaml",
+    # 17 loads resolver-free — effects (human_input/wait); promoted from _future (feature E).
+    "17": "17-effects-human-wait.yaml",
+    "18": "18-research-pipeline.yaml",
+    "19": "19-binding-stances.yaml",
+    # 20 loads resolver-free — its `call` targets an in-file `defs:` callable.
+    "20": "20-call-defs.yaml",
+    # 21 loads resolver-free — an INLINE call desugars to a synth call on the in-file def.
+    "21": "21-inline-call.yaml",
+    # 22 — the value-case: ${gate.output} desugars to the branch coalesce.
+    "22": "22-case-value.yaml",
+    # 23 — asserts at every scope (flow boundary/post + inline-call, def-child, node pre/post).
+    "23": "23-asserts-scopes.yaml",
+}
+
+
+def _load(seed: str) -> LoadedFlow:
+    return load_flow((_SEEDS / _SEED_FILES[seed]).read_text())
+
+
+# --------------------------------------------------------------------------- #
+# every loadable seed loads to a LoadedFlow (a CompiledFlow + inputs + asserts)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("seed", _LOADABLE)
+def test_seed_loads_to_loaded_flow(seed):
+    loaded = _load(seed)
+    assert isinstance(loaded, LoadedFlow)
+    assert isinstance(loaded.compiled, CompiledFlow)
+    assert loaded.compiled.start_id in loaded.compiled.nodes  # synthesized entry node present
+    # an __end__ edge exists (the flow has a codomain).
+    assert any(e.to == END_ID for e in loaded.compiled.edges)
+
+
+# --------------------------------------------------------------------------- #
+# seed 02 — case desugar: IfElseNode gate + control edges + coalesce flow-output
+# --------------------------------------------------------------------------- #
+
+
+def test_seed02_gate_is_if_else_with_control_edges():
+    loaded = _load("02")
+    flow = loaded.compiled
+    gate = flow.nodes["gate"]
+    assert isinstance(gate, IfElseNode)
+    # gate -> positive / gate -> cautious control edges (the then/else targets).
+    out = {(e.to, e.source_handle) for e in flow.outgoing("gate")}
+    assert ("positive", "positive") in out
+    assert ("cautious", "default") in out  # else: -> the internal default handle
+    # coalesce flow-output: BOTH branches reach __end__.
+    end_producers = {e.from_ for e in flow.edges if e.to == END_ID}
+    assert end_producers == {"positive", "cautious"}
+    # bare whole-string `outputs:` -> one FlowOutput (terminal_output returns bare value).
+    assert len(flow.outputs) == 1
+    assert flow.outputs[0].from_ == "${positive.output | cautious.output}"
+
+
+def test_seed02_start_feeds_input_readers_branch_targets_control_gated():
+    # every ${input.topic} reader (score/positive/cautious) gets a START_ID data edge
+    # (input_group="topic"); the branch targets are ALSO control-gated by `gate` (the veto still
+    # skip-floods the untaken branch). The single root is the synthesized START_ID node.
+    flow = _load("02").compiled
+    assert flow.start_id == START_ID
+    start_data = {e.to for e in flow.edges if e.from_ == START_ID and e.input_group == "topic"}
+    assert start_data == {"score", "positive", "cautious"}
+    control = {e.to for e in flow.edges if e.from_ == "gate" and e.source_handle is not None}
+    assert control == {"positive", "cautious"}
+
+
+# --------------------------------------------------------------------------- #
+# seed 13 — nested record output_shape + a dict-valued (record-typed) flow input
+# --------------------------------------------------------------------------- #
+
+
+def test_seed13_nested_record_output_and_dict_input():
+    loaded = _load("13")
+    plan = loaded.compiled.nodes["plan"]
+    assert isinstance(plan, CodeNode)
+    shape = plan.output_shape
+    assert shape.seg_type == SegmentType.OBJECT
+    # summary is a nested record; meta is nested again (two levels deep).
+    summary = shape.fields["summary"]
+    assert summary.seg_type == SegmentType.OBJECT
+    meta = summary.fields["meta"]
+    assert meta.seg_type == SegmentType.OBJECT
+    assert set(meta.fields) == {"as_of", "dry_run"}
+    # the record-typed `config:` flow input resolves to a record Shape.
+    config = next(d for d in loaded.input if d.name == "config")
+    assert config.shape.seg_type == SegmentType.OBJECT
+    assert set(config.shape.fields) == {"regroup", "bands"}
+
+
+# --------------------------------------------------------------------------- #
+# seed 11 — anchored nodes all built (YAML <<: merge expanded before the schema)
+# --------------------------------------------------------------------------- #
+
+
+def test_seed11_anchored_nodes_built():
+    flow = _load("11").compiled
+    for nid in ("pro", "con", "judge"):
+        node = flow.nodes[nid]
+        assert isinstance(node, AgentNode)
+        assert node.output_shape.seg_type == SegmentType.STRING  # from the anchor
+        assert node.llm_config is not None  # llm_config merged in from the anchor
+
+
+# --------------------------------------------------------------------------- #
+# seed 07 — MODEL fields (model_id / weights_uri / runtime)
+# --------------------------------------------------------------------------- #
+
+
+def test_seed07_model_fields():
+    flow = _load("07").compiled
+    predict = flow.nodes["predict"]
+    assert isinstance(predict, ModelNode)
+    assert predict.model_id == "topic-ranker-v1"
+    assert predict.weights_uri == "manifold://calpha/models/topic-ranker-v1.pt"
+    assert predict.runtime_name == "torchscript"
+    # object output {score, rank}.
+    assert set(predict.output_shape.fields) == {"score", "rank"}
+
+
+# --------------------------------------------------------------------------- #
+# seed 14 — AGENT knobs (mode / tools / controls / llm_config)
+# --------------------------------------------------------------------------- #
+
+
+def test_seed14_agent_knobs():
+    flow = _load("14").compiled
+    reviewer = flow.nodes["reviewer"]
+    assert isinstance(reviewer, AgentNode)
+    assert reviewer.mode == "tool_calling"
+    assert reviewer.tools == ["get_web_data", "web_search"]
+    assert reviewer.controls == ["ask_user"]
+    assert reviewer.llm_config is not None
+    assert reviewer.llm_config["provider"] == "anthropic"
+
+
+# --------------------------------------------------------------------------- #
+# seed 18 — the rich integration (the most likely to break)
+# --------------------------------------------------------------------------- #
+
+
+def test_seed18_synth_carries_view_record():
+    flow = _load("18").compiled
+    synth = flow.nodes["synth"]
+    shape = synth.output_shape
+    assert shape.seg_type == SegmentType.OBJECT
+    assert set(shape.fields) == {"stance", "claim", "confidence"}
+    # stance is the Stance enum -> its Shape carries the tags.
+    assert shape.fields["stance"].tags == {"positive", "negative", "neutral"}
+    assert shape.fields["confidence"].seg_type == SegmentType.NUMBER
+
+
+def test_seed18_route_desugars_case_on_with_else():
+    flow = _load("18").compiled
+    route = flow.nodes["route"]
+    assert isinstance(route, IfElseNode)
+    # on-form: one __on param wired to the stance ref (the source lives on flow.wiring).
+    assert [p.name for p in route.params] == ["__on"]
+    assert flow.wiring["route"] == {"__on": "${synth.output.stance}"}
+    out = {(e.to, e.source_handle) for e in flow.outgoing("route")}
+    assert ("pro_note", "pro_note") in out
+    assert ("con_note", "con_note") in out
+    assert ("neutral_note", "default") in out  # else: -> default handle
+
+
+def test_seed18_multi_output_with_coalesce():
+    flow = _load("18").compiled
+    # multi-output object: stance/confidence/note (each a named FlowOutput).
+    names = {o.name for o in flow.outputs}
+    assert names == {"stance", "confidence", "note"}
+    # coalesce note -> all three note producers reach __end__.
+    end_producers = {e.from_ for e in flow.edges if e.to == END_ID}
+    assert end_producers == {"synth", "pro_note", "con_note", "neutral_note"}
+
+
+def test_seed18_post_terminal_assert_against_view():
+    loaded = _load("18")
+    # the confidence-range assert reads ${synth.output.confidence} -> post-terminal,
+    # validated against the View record (load succeeds, not lenient-skipped).
+    assert loaded.asserts.boundary == []
+    assert len(loaded.asserts.post) == 1
+    assert "confidence" in loaded.asserts.post[0]
+
+
+# --------------------------------------------------------------------------- #
+# seed 10 — boundary asserts split (inputs/system-only -> boundary)
+# --------------------------------------------------------------------------- #
+
+
+def test_seed10_asserts_are_boundary():
+    loaded = _load("10")
+    # all four asserts read only ${input.X} -> boundary (none post-terminal).
+    assert len(loaded.asserts.boundary) == 4
+    assert loaded.asserts.post == []
+
+
+# --------------------------------------------------------------------------- #
+# seed 19 — every binding stance loads clean (compile-time)
+# --------------------------------------------------------------------------- #
+
+
+def test_seed19_loads_clean():
+    loaded = _load("19")
+    # the assembler exercises every stance; all compile + name-check.
+    sources = loaded.compiled.wiring["assemble"]
+    assert sources["claim"] == "${pro.output | con.output}"
+    assert sources["detail"] == "${pro_detail.output:-null}"
+    assert sources["when"] == "${input.as_of:-${system.today}}"
+    assert sources["topic"] == "${input.topic:?a topic is required}"
+
+
+# --------------------------------------------------------------------------- #
+# exclusions — `call` needs a child resolver; the call/map seeds not loaded
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("seed", ["04-call.yaml", "05-call-map.yaml"])
+def test_ref_map_without_resolver_is_loud(seed):
+    # A `call` node is built given a child resolver; without one it is loud (the
+    # resolver-required path). The resolver'd load+compile path is covered in
+    # tests/engine/test_ref_map.py.
+    with pytest.raises(LoadError) as exc:
+        load_flow((_SEEDS / seed).read_text())
+    assert "resolver" in str(exc.value).lower()
+
+
+def test_depends_on_seed_emits_ordering_edge():
+    # seed 12 is wired (feature D): `fetch depends_on [warm_cache]` -> an ordering edge.
+    loaded = load_flow((_SEEDS / "12-depends-on.yaml").read_text())
+    assert isinstance(loaded, LoadedFlow)
+    ordering = [e for e in loaded.compiled.edges if e.ordering]
+    assert len(ordering) == 1
+    e = ordering[0]
+    assert (e.from_, e.to) == ("warm_cache", "fetch")
+    assert e.optional is False  # depends_on -> co-skip
+
+
+def test_loaded_flow_carries_version():
+    from agent_compose import load_flow
+    lf = load_flow(
+        'id: x\nname: x\nversion: v2\nnodes:\n  a: {kind: code, code: m:f}\n'
+        'output: {r: "${a.output}"}\n'
+    )
+    assert lf.version == "v2"
+
+
+def test_loaded_flow_version_none_when_absent():
+    from agent_compose import load_flow
+    lf = load_flow(
+        'id: x\nname: x\nnodes:\n  a: {kind: code, code: m:f}\n'
+        'output: {r: "${a.output}"}\n'
+    )
+    assert lf.version is None

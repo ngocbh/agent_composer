@@ -1,0 +1,37 @@
+# 14 — AGENT knobs: mode, tools, controls, llm_config.
+#
+# An AGENT is more than a prompt — it runs a `mode` (the loop), may call ordinary
+# `tools` (TOOL_REGISTRY keys it invokes inside the loop, vs a TOOL *node* which is
+# one direct call), and may call `controls` (engine capabilities like `ask_user`,
+# which suspends for the user's reply). Shows: mode / tools / controls / llm_config
+# and a structured (object) agent output.
+
+id: agent-tools
+name: agent_tools
+description: An AGENT running a tool loop with ordinary tools plus the ask_user control.
+
+input:
+  topic: str
+
+nodes:
+  reviewer:
+    kind: agent
+    mode: tool_calling           # the loop: plain | tool_calling | react
+    tools: [get_web_data, web_search]   # ordinary tools (TOOL_REGISTRY)
+    controls: [ask_user]         # control tools — ask_user suspends for the user's answer
+    llm_config:
+      provider: anthropic
+      model: claude-opus-4-8
+      temperature: 0.3
+    input:
+      topic: ${input.topic}
+    output:                     # structured agent output (one object)
+      claim: str
+      confidence: float
+    prompt: |-
+      Research ${topic} with the available tools. If a key fact is ambiguous, ask
+      the user. Return a neutral {claim, confidence in [0, 1]}. No recommendations.
+
+output:
+  claim:     ${reviewer.output.claim}
+  confidence: ${reviewer.output.confidence}

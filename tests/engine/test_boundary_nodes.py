@@ -1,0 +1,147 @@
+"""The boundary flip: the loader synthesizes real START_ID/END_ID NODES into every
+flow (the __start__/__end__ sentinels retire — the strings persist as the reserved node ids), the
+engine reads END_ID's committed value as the run result, START_ID is seeded at engine init, and
+${input.X} resolves to store[START_ID]. Assertions check the NODES exist + edges carry real
+adjacency, never that the strings are absent (they ARE the node ids).
+"""
+
+from agent_compose.compile.model import END_ID, START_ID
+from agent_compose.compose import load_flow, run_flow
+from agent_compose.nodes.base import NodeKind
+
+_FLOW = """
+id: f
+name: f
+input:
+  x: str
+nodes:
+  n:
+    kind: code
+    input:
+      x: ${input.x}
+    output: str
+    code: tests.engine._compose_codefns:echo_x
+output: ${n.output}
+"""
+
+# A required terminal output whose only producer SKIPS -> END_ID's required group dies ->
+# END_ID is skip-flooded, never commits -> RunFailed (via END_ID disposition). `gate` routes to
+# `kept`; `dropped` is skip-flooded, so the `outputs: ${dropped.output}` group co-skips.
+_COALESCE_REQUIRED = """
+id: e7
+name: e7
+input:
+  seed: float
+nodes:
+  score:
+    kind: code
+    code: tests.engine._compose_codefns:score
+    input:
+      seed: ${input.seed}
+    output: float
+  gate:
+    kind: case
+    cases:
+      - when: "${score.output} >= 1"
+        then: kept
+    else: cold
+  kept:
+    kind: code
+    code: tests.engine._compose_codefns:cautious
+    input:
+      topic: ${input.seed}
+    output: str
+  cold:
+    kind: code
+    code: tests.engine._compose_codefns:cautious
+    input:
+      topic: ${input.seed}
+    output: str
+output: ${kept.output}
+"""
+_E7_INPUTS = {"seed": 0.0}   # score=0 -> when `>= 1` false -> else `cold`; `kept` skip-flooded
+
+
+def test_loader_synthesizes_start_and_end_nodes():
+    flow = load_flow(_FLOW).compiled
+    # START_ID/END_ID are real NODES now (the ids ARE the old sentinel strings).
+    assert flow.nodes[START_ID].kind is NodeKind.START
+    assert flow.nodes[END_ID].kind is NodeKind.END
+    # START_ID is the single root; END_ID is the terminal (via the start_id/end_id accessors).
+    assert flow.start_id == START_ID
+    assert flow.terminal_id == END_ID
+    # ordinary edges to/from the real boundary nodes (n -> END_ID is a real adjacency).
+    pairs = {(e.from_, e.to) for e in flow.edges}
+    assert (START_ID, "n") in pairs and ("n", END_ID) in pairs
+    # the n -> END_ID edge carries the output's input_group (a real data edge, not a pseudo-edge).
+    assert any(e.from_ == "n" and e.to == END_ID and e.input_group is not None for e in flow.edges)
+
+
+def test_run_result_is_end_node_value():
+    res = run_flow(load_flow(_FLOW), {"x": "ACME"})
+    assert res.status == "succeeded"
+    assert res.output == "ACME"            # = store[END_ID], the END_ID node's committed value
+
+
+def test_terminal_helpers_retired():
+    from agent_compose.runtime.engine import FlowEngine
+    # the three terminal helpers are gone (END_ID commits the value; the disposition handles skip).
+    assert not hasattr(FlowEngine, "terminal_output")
+    assert not hasattr(FlowEngine, "_emit_terminal")
+    assert not hasattr(FlowEngine, "_terminal_coskip")
+
+
+def test_terminal_coskip_fails_via_end_disposition():
+    # a required `outputs:` group whose only producer SKIPS -> END_ID's required group dies ->
+    # END_ID is skip-flooded, never commits -> RunFailed (via END_ID disposition), byte-stable msg.
+    res = run_flow(load_flow(_COALESCE_REQUIRED), _E7_INPUTS)
+    assert res.status == "failed"
+    assert "skipped" in (res.error or "")
+    assert res.error == "terminal output 'result' skipped"
+
+
+# --- START_ID seeded at engine init + ${input.X} -> store[START_ID]; inputs namespace retired -- #
+def test_inputs_resolve_to_start_node():
+    from agent_compose.state.pool import TypedVariablePool
+    pool = TypedVariablePool()
+    pool.set(START_ID, {"x": "ACME"})                 # START_ID commits the bound input record
+    assert pool.resolve("input", ["x"]) == "ACME"    # ${input.x} == store[START_ID].x
+
+
+def test_pool_inputs_namespace_retired():
+    from agent_compose.state.pool import TypedVariablePool
+    pool = TypedVariablePool()
+    assert not hasattr(pool, "add_inputs")
+    assert "inputs" not in TypedVariablePool.model_fields   # the `inputs` field is gone
+
+
+def test_inputs_read_mints_producer_edge_from_start():
+    # ${input.x} on node `n` now depends on START_ID -> a START_ID->n data edge tagged input_group=x.
+    flow = load_flow(_FLOW).compiled
+    assert any(e.from_ == START_ID and e.to == "n" and e.input_group == "x" for e in flow.edges)
+
+
+def test_input_reader_is_not_also_a_bare_root():
+    # a node reading ${input.x} gets the data edge ONLY — NOT a second bare START_ID->n root edge.
+    flow = load_flow(_FLOW).compiled
+    start_to_n = [e for e in flow.edges if e.from_ == START_ID and e.to == "n"]
+    assert len(start_to_n) == 1 and start_to_n[0].input_group == "x"
+
+
+def test_engine_seeds_store_start_without_scheduling_start_or_emitting_succeeded():
+    # the engine invokes StartNode.run(run-args) ONCE at init, commits store[START_ID],
+    # and does NOT enqueue START_ID / emit a NodeSucceeded for START_ID. The run succeeds and the value
+    # came from the seed, not from START_ID being scheduled.
+    from agent_compose.events import NodeSucceeded
+    from agent_compose.runtime.engine import FlowEngine
+    from agent_compose.state.pool import TypedVariablePool
+
+    loaded = load_flow(_FLOW)
+    pool = TypedVariablePool()
+    eng = FlowEngine(loaded.compiled, pool, run_inputs={"x": "ACME"},
+                     boundary_asserts=loaded.asserts.boundary)
+    events = list(eng.run())
+    assert not any(isinstance(e, NodeSucceeded) and e.node_id == START_ID for e in events)
+    assert pool.get(START_ID) == {"x": "ACME"}        # START_ID's bound record committed at init
+    res = run_flow(load_flow(_FLOW), {"x": "ACME"})
+    assert res.status == "succeeded" and res.output == "ACME"

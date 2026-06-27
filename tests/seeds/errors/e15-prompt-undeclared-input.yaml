@@ -1,0 +1,13 @@
+# e15 — an AGENT prompt references a non-declared input (prompt-L1). COMPILE.
+id: err-prompt-undeclared
+name: err_prompt_undeclared
+input:
+  topic: str
+nodes:
+  note:
+    kind: agent
+    input:
+      topic: ${input.topic}
+    output: str
+    prompt: "Rate ${rating}."    # ERROR: `rating` is not a declared input of this node
+output: ${note.output}

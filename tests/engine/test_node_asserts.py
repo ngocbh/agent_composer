@@ -1,0 +1,314 @@
+"""Node-level `asserts:` — the per-node contract.
+
+Compile: node-local validation + pre/post classification + stamping onto the Node.
+Runtime: per-node enforcement in `Node.run` (pre before `_run`, post after) — e2e below.
+"""
+
+import pytest
+
+from agent_compose.compose import LoadError, load_flow, run_flow
+
+
+def _flow(asserts: list[str], *, input_decl="n: ${input.v}", outputs="int") -> str:
+    a = "\n".join(f'      - "{q}"' for q in asserts)
+    return f"""
+id: na
+name: na
+input:
+  v: int
+nodes:
+  x:
+    kind: code
+    code: tests.engine._compose_codefns:double
+    input:
+      {input_decl}
+    output: {outputs}
+    asserts:
+{a}
+output: ${{x.output}}
+"""
+
+
+# ---------- classify + stamp ----------
+
+
+def test_node_asserts_classify_pre_and_post():
+    loaded = load_flow(_flow(["${output} >= 0", "${n} >= 0"]))
+    x = loaded.compiled.nodes["x"]
+    assert x.post_asserts == ["${output} >= 0"]   # reads ${output}
+    assert x.pre_asserts == ["${n} >= 0"]         # inputs-only
+
+
+# ---------- rejections (located LoadError) ----------
+
+
+def test_reject_unknown_input_ref():
+    with pytest.raises(LoadError, match="not a declared input"):
+        load_flow(_flow(["${nope} > 0"]))
+
+
+def test_reject_pool_head_ref():
+    with pytest.raises(LoadError, match="node-local"):
+        load_flow(_flow(["${input.v} > 0"]))
+
+
+def test_reject_inline_call_in_node_assert():
+    flow = f"""
+id: na
+name: na
+input:
+  v: int
+defs:
+  dbl:
+    input:
+      n: int
+    nodes:
+      y:
+        kind: code
+        code: tests.engine._compose_codefns:double
+        input:
+          n: ${{input.n}}
+        output: int
+    output: ${{y.output}}
+nodes:
+  x:
+    kind: code
+    code: tests.engine._compose_codefns:double
+    input:
+      n: ${{input.v}}
+    output: int
+    asserts:
+      - "${{ dbl(n=${{input.v}}) }} >= 0"
+output: ${{x.output}}
+"""
+    with pytest.raises(LoadError, match="inline"):
+        load_flow(flow)
+
+
+def test_reject_input_named_output():
+    with pytest.raises(LoadError, match="collides"):
+        load_flow(_flow(["${output} >= 0"], input_decl="output: ${input.v}"))
+
+
+def test_reject_dotted_field_on_scalar_output():
+    with pytest.raises(LoadError):
+        load_flow(_flow(["${output.field} >= 0"]))  # output is int (scalar)
+
+
+def test_reject_node_asserts_on_mapped_call():
+    flow = f"""
+id: nam
+name: nam
+input:
+  vs: list[int]
+defs:
+  dbl:
+    input:
+      n: int
+    nodes:
+      y:
+        kind: code
+        code: tests.engine._compose_codefns:double
+        input:
+          n: ${{input.n}}
+        output: int
+    output: ${{y.output}}
+nodes:
+  m:
+    kind: map
+    call: dbl
+    over: ${{input.vs}}
+    input:
+      n: ${{item}}
+    asserts:
+      - "${{output}} >= 0"
+output: ${{m.output}}
+"""
+    with pytest.raises(LoadError, match="mapped"):
+        load_flow(flow)
+
+
+# ---------- per-node enforcement (e2e via run_flow) ----------
+
+
+def test_pre_assert_passes_and_runs():
+    out = run_flow(load_flow(_flow(["${n} >= 0"])), {"v": 5})
+    assert out.status == "succeeded" and out.output == 10
+
+
+def test_pre_assert_violated_fails_before_body():
+    out = run_flow(load_flow(_flow(["${n} >= 0"])), {"v": -1})
+    assert out.status != "succeeded"
+    assert "pre-assert" in (out.error or "")
+
+
+def test_post_assert_violated_fails():
+    out = run_flow(load_flow(_flow(["${output} >= 0"])), {"v": -1})  # double(-1) = -2
+    assert out.status != "succeeded"
+    assert "post-assert" in (out.error or "")
+
+
+def test_post_assert_on_nonscalar_output_fails_cleanly():
+    # ${output} is a record (dict); an ordered op RAISES inside evaluate_when_record — the
+    # hook must turn that into a clean NodeFailed, not crash the run (review critical #3).
+    flow = """
+id: rec
+name: rec
+input:
+  topic: str
+nodes:
+  x:
+    kind: code
+    code: tests.engine._compose_codefns:make_report
+    input:
+      topic: ${input.topic}
+    output:
+      report: str
+      n: int
+    asserts:
+      - "${output} >= 0"
+output: ${x.output}
+"""
+    out = run_flow(load_flow(flow), {"topic": "ACME"})  # output is {report, n}
+    assert out.status != "succeeded"  # clean RunFailed, no uncaught exception
+
+
+def test_post_assert_record_field_passes():
+    flow = """
+id: recf
+name: recf
+input:
+  topic: str
+nodes:
+  x:
+    kind: code
+    code: tests.engine._compose_codefns:make_report
+    input:
+      topic: ${input.topic}
+    output:
+      report: str
+      n: int
+    asserts:
+      - "${output.n} >= 0"
+output: ${x.output}
+"""
+    out = run_flow(load_flow(flow), {"topic": "ACME"})
+    assert out.status == "succeeded"
+
+
+def test_skipped_branch_target_asserts_do_not_fire():
+    # `gate` routes to `lo`; `hi` (with an assert that WOULD fail) is skip-flooded -> its
+    # asserts never fire (skip-correct), and the run succeeds with `lo`'s value.
+    flow = """
+id: skp
+name: skp
+input:
+  v: int
+nodes:
+  gate:
+    kind: case
+    cases:
+      - when: "${input.v} >= 100"
+        then: hi
+    else: lo
+  hi:
+    kind: code
+    code: tests.engine._compose_codefns:double
+    input:
+      n: ${input.v}
+    output: int
+    asserts:
+      - "${output} > 1000000"
+  lo:
+    kind: code
+    code: tests.engine._compose_codefns:double
+    input:
+      n: ${input.v}
+    output: int
+output: ${gate.output}
+"""
+    out = run_flow(load_flow(flow), {"v": 5})  # -> lo (hi skip-flooded, its assert never fires)
+    assert out.status == "succeeded" and out.output == 10
+
+
+def test_absent_input_pre_assert_fails_cleanly():
+    # a node runs with a required input bound from an omitted Optional flow input (-> None);
+    # the assert-time bind raises BindingError, which must become a clean RunFailed (review #2).
+    flow = """
+id: ab
+name: ab
+input:
+  maybe: Optional[int]
+nodes:
+  x:
+    kind: code
+    code: tests.engine._compose_codefns:double
+    input:
+      n: ${input.maybe}
+    output: int
+    asserts:
+      - "${n} >= 0"
+output: ${x.output}
+"""
+    out = run_flow(load_flow(flow), {})  # maybe omitted -> None -> required bind fails
+    assert out.status != "succeeded"  # clean RunFailed, not an uncaught exception
+
+
+_CHECKED_DEF = """
+defs:
+  checked:
+    input:
+      n: int
+    nodes:
+      y:
+        kind: code
+        code: tests.engine._compose_codefns:double
+        input:
+          n: ${input.n}
+        output: int
+        asserts:
+          - "${output} >= 0"
+    output: ${y.output}
+"""
+
+
+def test_def_internal_node_assert_via_ref():
+    flow = f"""
+id: dr
+name: dr
+input:
+  v: int
+{_CHECKED_DEF}
+nodes:
+  call_it:
+    kind: call
+    call: checked
+    input:
+      n: ${{input.v}}
+output: ${{call_it.output}}
+"""
+    loaded = load_flow(flow)
+    assert run_flow(loaded, {"v": 5}).status == "succeeded"          # y=10, ${output}>=0 holds
+    bad = run_flow(loaded, {"v": -1})                                # y=-2 -> def-internal post-assert fails
+    assert bad.status != "succeeded"
+
+
+def test_def_internal_node_assert_via_map():
+    flow = f"""
+id: dm
+name: dm
+input:
+  vs: list[int]
+{_CHECKED_DEF}
+nodes:
+  m:
+    kind: map
+    call: checked
+    over: ${{input.vs}}
+    input:
+      n: ${{item}}
+output: ${{m.output}}
+"""
+    loaded = load_flow(flow)
+    assert run_flow(loaded, {"vs": [1, 2, 3]}).status == "succeeded"
+    assert run_flow(loaded, {"vs": [1, -1, 3]}).status != "succeeded"  # element -1 -> y=-2 fails

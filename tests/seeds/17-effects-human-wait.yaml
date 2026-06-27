@@ -1,0 +1,69 @@
+# 17 — Effects: HUMAN_INPUT + WAIT.
+#
+# Propose an action, ask a human to APPROVE it (HUMAN_INPUT — suspend/resume, a TYPED answer),
+# route on the answer, WAIT until a settle time, then confirm (a side effect). Shows:
+# kind: human_input (flat: inputs:/prompt:/outputs:, the answer validated against a type),
+# kind: wait (until:), `case … on` routing the human's answer, and depends_on: to order a
+# side-effect node after the wait with no data binding.
+#
+# PROPOSED syntax — HUMAN_INPUT/WAIT are runtime-native but NOT yet authorable (§0c / engine
+# TODO: "Add HUMAN_INPUT / WAIT to NodeKind"). This seed PINS how effects look in the Compose surface
+# surface. Effects are top-level ONLY: an effect reachable inside a REF/MAP child is
+# compile-rejected (alang §4A — a child can't suspend yet).
+
+id: effects
+name: effects_human_wait
+description: Propose an action, get human approval, wait until settle, then confirm.
+
+typedefs:
+  Approval: Literal[approve, reject]    # the typed human answer (a tag-only enum)
+
+input:
+  topic: str
+  settle_at: date                       # when to confirm
+
+nodes:
+  propose:
+    kind: agent
+    input:
+      topic: ${input.topic}
+    output: str
+    prompt: "Propose one concrete, neutral action for ${topic} in a single sentence."
+
+  approve:
+    kind: human_input
+    input:
+      action: ${propose.output}        # context the prompt may reference (bare ${action})
+    prompt: "Approve this action? ${action}  (approve / reject)"
+    output: Approval                   # the injected answer is validated against Approval's tags
+
+  gate:
+    kind: case                          # route on the human's answer (simple form)
+    on: ${approve.output}
+    cases:
+      - when: approve
+        then: settle
+    else: abort
+
+  settle:
+    kind: wait
+    until: ${input.settle_at}          # park until the timestamp; resume is one-shot
+    # `wait` produces no meaningful value — downstream orders after it via depends_on.
+
+  confirm:
+    kind: code
+    depends_on: [settle]                # ordering edge — run after the wait (side effect)
+    input:
+      action: ${propose.output}
+    output: str
+    code: tests.seeds.fns:confirm_action
+
+  abort:
+    kind: agent
+    input:
+      action: ${propose.output}
+    output: str
+    prompt: "Write one neutral sentence noting this action was NOT approved: ${action}."
+
+# settle/confirm run only on approve; abort runs otherwise. Coalesce picks whichever ran.
+output: ${confirm.output | abort.output}

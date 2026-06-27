@@ -1,0 +1,51 @@
+"""OUTPUT_RESOLVER / COLLECTOR are fully retired (the splice replaced them).
+
+The START_ID..END_ID splice made both packages dead producers. Retiring them deletes the
+packages + the NodeKind members + exports, and RE-KEYS the eval_node pool-scoped post-assert
+branch from OUTPUT_RESOLVER to END_ID (so a spliced child END_ID's re-namespaced
+`${<callsite>/X.output}` post asserts still fire pool-scoped). This pins the deletion + the
+re-keyed firing.
+"""
+
+import importlib
+
+import pytest
+
+from agent_compose.events import NodeFailed, NodeSucceeded
+from agent_compose.nodes.base import NodeKind
+from agent_compose.nodes.end import EndNode
+from agent_compose.state.pool import TypedVariablePool
+from tests.engine._fakes import drive, stamp_reads
+
+
+def test_node_kind_has_no_output_resolver_or_collector():
+    assert not hasattr(NodeKind, "OUTPUT_RESOLVER")
+    assert not hasattr(NodeKind, "COLLECTOR")
+
+
+def test_output_resolver_and_collector_packages_are_gone():
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("agent_compose.nodes.output_resolver")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("agent_compose.nodes.collector")
+
+
+def test_child_end_pool_scoped_post_assert_fires_through_the_rekeyed_end_branch():
+    # the deleted test_clone_child::test_output_resolver_violated_pool_scoped_post_assert_fails
+    # body, retargeted onto an END_ID node: a namespaced `${<callsite>/X.output}` post-assert must
+    # still fire POOL-scoped through the re-keyed NodeKind.END branch.
+    end = EndNode.record("each/__end__", output_names=["out"])
+    end.post_asserts = ["${each/tail.output} != ''"]
+    assert end.kind == NodeKind.END
+    pool = TypedVariablePool()
+
+    pool.set("each/tail", "ok")
+    flow = type("F", (), {"wiring": {end.id: {}}})()
+    ok = list(drive(stamp_reads(end, {"out": "${each/tail.output}"}), pool, flow))
+    assert any(isinstance(e, NodeSucceeded) for e in ok)
+
+    bad = EndNode.record("each/__end__", output_names=["out"])
+    bad.post_asserts = ["${each/tail.output} != ''"]
+    pool.set("each/tail", "")
+    failed = list(drive(stamp_reads(bad, {"out": "${each/tail.output}"}), pool, flow))
+    assert any(isinstance(e, NodeFailed) and "post-assert" in e.error for e in failed)

@@ -1,0 +1,303 @@
+"""Unit tests for the expression evaluator + the real IF_ELSE node."""
+
+import pytest
+
+from agent_compose.expr.expressions import (
+    ExpressionError,
+    evaluate_when,
+    render_template,
+    resolve_reference,
+)
+from agent_compose.compile.model import END_ID, START_ID, Edge, CompiledFlow
+from agent_compose.nodes.end import EndNode
+from agent_compose.nodes.if_else import Case, IfElseNode
+from agent_compose.nodes.start import StartNode
+from agent_compose.runtime.engine import FlowEngine
+from agent_compose.state.pool import TypedVariablePool
+from tests.engine._fakes import FuncNode, RecordNode, derive_wiring, stamp_reads
+
+
+def _with_boundary(node_map: dict) -> dict:
+    # inject the real START_ID/END_ID boundary NODES so a manual `from_parts` flow runs.
+    node_map = dict(node_map)
+    node_map.setdefault(START_ID, StartNode(START_ID, input_decls=[]))
+    node_map.setdefault(END_ID, EndNode.record(END_ID, output_names=[]))
+    return node_map
+
+
+# --- expression evaluation -------------------------------------------------- #
+
+
+def _pool_with(**outputs):
+    pool = TypedVariablePool()
+    for node_id, value in outputs.items():
+        # `.output` is a SYNTACTIC discriminator the resolver SKIPS; store the
+        # node's value directly. A `${<id>.output}` ref evaluates to `value` here.
+        pool.set(node_id, value)
+    return pool
+
+
+def test_resolve_reference_structured():
+    pool = TypedVariablePool()
+    # `.output` is a syntactic discriminator the resolver skips, NOT a stored key.
+    # Store the node value directly; `resolve("a", ["output", "pe"])` traverses store["a"]["pe"].
+    pool.set("a", {"pe": 21.0})
+    assert resolve_reference("a.output.pe", pool) == 21.0
+    assert resolve_reference("a.output", pool) == {"pe": 21.0}
+
+
+def test_when_numeric_and_boolean_logic():
+    pool = _pool_with(score=0.8)
+    assert evaluate_when("${score.output} > 0.5", pool) is True
+    assert evaluate_when("${score.output} > 0.5 and ${score.output} < 1", pool) is True
+    assert evaluate_when("${score.output} > 0.9 or ${score.output} == 0.8", pool) is True
+    assert evaluate_when("not ${score.output} > 0.9", pool) is True
+
+
+def test_when_string_and_in():
+    pool = _pool_with(label="approve")
+    assert evaluate_when("${label.output} == 'approve'", pool) is True
+    assert evaluate_when("${label.output} in 'approve/reject'", pool) is True
+
+
+def test_when_missing_reference_is_falsy_not_error():
+    pool = TypedVariablePool()
+    assert evaluate_when("${ghost.output} > 5", pool) is False
+
+
+def test_when_bare_reference_rejected():
+    with pytest.raises(ExpressionError):
+        evaluate_when("${x.output}", _pool_with(x=1))
+
+
+# --- arithmetic in when:/asserts: (numbers only) ---------------------------- #
+
+
+def test_when_arithmetic_basic_and_precedence():
+    pool = _pool_with(a=3, b=2)
+    assert evaluate_when("${a.output} + ${b.output} == 5", pool) is True
+    # precedence: * before +
+    assert evaluate_when("${a.output} + ${b.output} * 2 == 7", pool) is True
+    # parens override
+    assert evaluate_when("(${a.output} + ${b.output}) * 2 == 10", pool) is True
+
+
+def test_when_arithmetic_div_mod_unary():
+    pool = _pool_with(n=6, d=4)
+    assert evaluate_when("${n.output} / 3 == 2", pool) is True
+    assert evaluate_when("${d.output} % 2 == 0", pool) is True
+    assert evaluate_when("-${n.output} < 0", pool) is True
+    # arithmetic on both sides of the comparison
+    assert evaluate_when("${n.output} - 1 >= ${d.output} + 1", pool) is True
+
+
+def test_when_arithmetic_non_numeric_raises():
+    pool = _pool_with(s="x")
+    with pytest.raises(ExpressionError):
+        evaluate_when("${s.output} + 1 == 2", pool)
+
+
+def test_when_arithmetic_in_record_path():
+    # the same grammar serves the strict-IF_ELSE record path
+    from agent_compose.expr.expressions import evaluate_when_record
+
+    assert evaluate_when_record("${a} * ${b} >= 10", {"a": 4, "b": 3}) is True
+    assert evaluate_when_record("${a} % 2 == 1", {"a": 5}) is True
+
+
+def test_when_string_equality_still_works_under_arith_grammar():
+    # non-arithmetic comparisons (string ==, in) unaffected by the arithmetic grammar
+    pool = _pool_with(label="approve")
+    assert evaluate_when("${label.output} == 'approve'", pool) is True
+    assert evaluate_when("${label.output} in 'approve/reject'", pool) is True
+
+
+# --- list literals in when:/asserts: (the `in [...]` / `!= []` RHS) ---------- #
+
+
+def test_when_list_literal_membership_and_equality():
+    # seeds 05/10 use list literals on the RHS of `in` / `!=` / `==`.
+    pool = _pool_with(style="relevance", bundle=["ACME", "BETA"], empty=[])
+    assert evaluate_when('${style.output} in ["relevance", "value"]', pool) is True
+    assert evaluate_when('${style.output} not in ["value", "quality"]', pool) is True
+    assert evaluate_when("${bundle.output} != []", pool) is True
+    assert evaluate_when("${empty.output} == []", pool) is True
+    # numeric + nested-arithmetic elements also resolve as values
+    assert evaluate_when("2 in [1, 2, 3]", pool) is True
+    assert evaluate_when("5 in [2 + 3, 10]", pool) is True
+
+
+# --- render_template raise-on-unresolved (slice 3) -------------------------- #
+
+
+def test_render_template_substitutes_present_ref():
+    pool = TypedVariablePool()
+    pool.add_system("topic", "ZETA")
+    # store the node's value directly (no `{"output": ...}` wrap).
+    pool.set("a", {"pe": 21.0})
+    assert (
+        render_template("Assess ${system.topic} pe=${a.output.pe}", pool)
+        == "Assess ZETA pe=21.0"
+    )
+
+
+def test_render_template_raises_on_unresolved_ref():
+    pool = TypedVariablePool()
+    with pytest.raises(ExpressionError):
+        render_template("Assess ${system.topic} today.", pool)
+    with pytest.raises(ExpressionError):
+        render_template("From ${ghost.output}.", pool)
+
+
+def test_render_template_no_refs_is_identity():
+    assert render_template("plain text, no refs", TypedVariablePool()) == "plain text, no refs"
+
+
+def test_when_missing_reference_still_falsy_after_render_change():
+    # The `when:` path must KEEP missing -> falsy (locked); only render_template changed.
+    pool = TypedVariablePool()
+    assert evaluate_when("${ghost.output} > 5", pool) is False
+
+
+# --- render_template_record (strict-AGENT prompt; slice 5) ------------------- #
+
+
+def test_render_record_substitutes_declared_inputs():
+    from agent_compose.expr.template import render_template_record
+
+    rec = {"topic": "ZETA", "rating": {"value": 0.8}}
+    assert render_template_record("Assess ${topic} v=${rating.value}", rec) == "Assess ZETA v=0.8"
+
+
+def test_render_record_raises_on_unknown_or_none():
+    from agent_compose.expr.template import render_template_record
+
+    with pytest.raises(ExpressionError):
+        render_template_record("hi ${ghost}", {"topic": "X"})
+    with pytest.raises(ExpressionError):
+        render_template_record("hi ${t}", {"t": None})  # present-but-None -> raise (strict floor)
+
+
+def test_render_record_no_refs_identity():
+    from agent_compose.expr.template import render_template_record
+
+    assert render_template_record("plain", {}) == "plain"
+
+
+def test_render_record_falsy_present_values_render():
+    # 0 / "" / False are present (not missing) and must render, not raise.
+    from agent_compose.expr.template import render_template_record
+
+    rec = {"w": 0, "s": {"on": False}, "name": ""}
+    assert render_template_record("w=${w} flag=${s.on} n='${name}'", rec) == "w=0 flag=False n=''"
+
+
+# --- evaluate_when_record (strict-IF_ELSE when:; slice 8) ------------------- #
+
+
+def test_evaluate_when_record_resolves_declared_inputs():
+    from agent_compose.expr.expressions import evaluate_when_record
+
+    rec = {"label": "POSITIVE", "rating": {"value": 0.8}}
+    assert evaluate_when_record("${label} == 'POSITIVE'", rec) is True
+    assert evaluate_when_record("${rating.value} > 0.7", rec) is True
+    assert evaluate_when_record("${label} == 'NEGATIVE'", rec) is False
+
+
+def test_evaluate_when_record_missing_is_falsy_not_raise():
+    # A declared-but-None input (or a dotted miss) propagates as falsy — the LOCKED
+    # `when:` semantics — NOT a raise (unlike render_template_record).
+    from agent_compose.expr.expressions import evaluate_when_record
+
+    assert evaluate_when_record("${label} == 'POSITIVE'", {"label": None}) is False
+    assert evaluate_when_record("${rating.value} > 0.7", {"rating": None}) is False
+
+
+def test_evaluate_when_record_in_with_none_operand_raises():
+    # Boundary: `in`/`not in` with a None operand on EITHER side RAISES (not falsy) —
+    # pre-existing _eval_comparison behavior, shared with the pool path, unchanged. This
+    # is the one leg of the locked None semantics that fails the node rather than routing
+    # to default (==/!=/ordered all go falsy on None).
+    from agent_compose.expr.expressions import evaluate_when_record
+
+    with pytest.raises(ExpressionError):
+        evaluate_when_record("'x' in ${opts}", {"opts": None})   # None RHS
+    with pytest.raises(ExpressionError):
+        evaluate_when_record("${x} in 'abc'", {})                # None LHS (missing input)
+    with pytest.raises(ExpressionError):
+        evaluate_when_record("${x} not in 'abc'", {})
+
+
+# --- IF_ELSE node end-to-end through the engine ----------------------------- #
+
+
+def _branch_graph(cases):
+    # Strict IF_ELSE: the router declares `score` (bound from the upstream node) and
+    # routes on the bare `${score}`. IfElseNode gets its inputs via the base attribute
+    # the compiler threads — here set post-construction (no compiler in this unit test).
+    # `.output` is a SKIP token; the upstream FuncNode emits the scalar value
+    # directly, and `${score.output}` reads `pool.store["score"]` unwrapped.
+    log: list = []
+    cond = IfElseNode("cond", cases)
+    stamp_reads(cond, {"score": "${score.output}"})
+    nodes = [
+        FuncNode("score", lambda p: 0.8),
+        cond,
+        RecordNode("high", log),
+        RecordNode("low", log),
+    ]
+    edges = [
+        Edge("e0", START_ID, "score"),
+        Edge("e1", "score", "cond"),
+        Edge("e2", "cond", "high", "is_high"),
+        Edge("e3", "cond", "low", "default"),
+        Edge("e4", "high", END_ID),
+        Edge("e5", "low", END_ID),
+    ]
+    node_map = {n.id: n for n in nodes}
+    return CompiledFlow.from_parts(_with_boundary(node_map), edges, wiring=derive_wiring(node_map)), log
+
+
+def test_if_else_when_routes_high():
+    g, log = _branch_graph([Case(handle="is_high", when="${score} >= 0.7")])
+    list(FlowEngine(g).run())
+    assert log == ["high"]
+
+
+def test_if_else_when_routes_default():
+    g, log = _branch_graph([Case(handle="is_high", when="${score} >= 0.9")])
+    list(FlowEngine(g).run())
+    assert log == ["low"]
+
+
+def test_if_else_string_equality_routes():
+    # The canonical pattern: an upstream node writes a label; the router declares it as
+    # an input and does a pure string comparison on the bare `${label}`.
+    log: list = []
+    cond = IfElseNode("cond", [Case(handle="is_high", when="${label} == 'POSITIVE'")])
+    stamp_reads(cond, {"label": "${label.output}"})
+    nodes = [
+        FuncNode("label", lambda p: "POSITIVE"),
+        cond,
+        RecordNode("high", log),
+        RecordNode("low", log),
+    ]
+    edges = [
+        Edge("e0", START_ID, "label"),
+        Edge("e1", "label", "cond"),
+        Edge("e2", "cond", "high", "is_high"),
+        Edge("e3", "cond", "low", "default"),
+        Edge("e4", "high", END_ID),
+        Edge("e5", "low", END_ID),
+    ]
+    node_map = {n.id: n for n in nodes}
+    g = CompiledFlow.from_parts(_with_boundary(node_map), edges, wiring=derive_wiring(node_map))
+    list(FlowEngine(g).run())
+    assert log == ["high"]
+
+
+def test_if_else_case_without_when_errors():
+    g = _branch_graph([Case(handle="is_high")])[0]  # no `when`
+    events = list(FlowEngine(g).run())
+    # the node raises -> the run fails (not a silent misroute)
+    assert type(events[-1]).__name__ == "RunFailed"

@@ -1,0 +1,188 @@
+"""Tests for the dispatcher-side expansion ledger.
+
+The dispatcher appends one descriptor per `_apply_enqueue` call; nested expansions ride
+under their parent. The ledger is the source of truth for snapshot/restore; these tests
+verify the ledger shape itself.
+
+Fixtures here are reused by the snapshot/restore and durable-resume tests — keep them stable.
+"""
+
+from typing import Any
+
+from agent_compose.compile.model import END_ID, START_ID, FlowOutput
+from agent_compose.nodes.call.node import CallNode
+from agent_compose.nodes.human_input import HumanInputNode
+from agent_compose.nodes.map.node import MapNode
+from agent_compose.runtime.engine import FlowEngine
+from tests.engine._fakes import FuncNode, stamp_reads
+from tests.engine._graph_builder import _graph
+
+
+def _inner_pause_child():
+    """A small child CompiledFlow whose body contains an `ask` HUMAN_INPUT leaf
+    and an `unwrap` step that lifts the answer scalar out of the record. The
+    unwrap keeps the flow output a bare string so downstream e2e
+    tests can assert `evs[-1].output == "approve"` cleanly."""
+    unwrap = FuncNode("unwrap", lambda p: {"output": p["v"]})
+    stamp_reads(unwrap, {"v": "${ask.output}"})
+    return _graph(
+        [
+            FuncNode("seed", lambda p: {"output": p.get("payload", "x")}),
+            HumanInputNode("ask", prompt="Approve?"),
+            unwrap,
+        ],
+        [(START_ID, "seed"), ("seed", "ask"), ("ask", "unwrap"), ("unwrap", END_ID)],
+        outputs=[FlowOutput(name="answer", from_="${unwrap.output.output}")],
+    )
+
+
+def call_with_inner_pause():
+    """Parent: ${input.payload} -> bridge(CALL inner_pause_child) -> after(echo) -> END_ID.
+    pass `flow_id="inner_pause_child"` to CallNode (required keyword-only)."""
+    child = _inner_pause_child()
+    bridge = CallNode(
+        "bridge",
+        flow_id="inner_pause_child",
+        child=child,
+        child_inputs=child.nodes[child.start_id].params,
+    )
+    stamp_reads(bridge, {"payload": "${input.payload}"})
+    after = FuncNode("after", lambda p: {"output": p["v"]})
+    stamp_reads(after, {"v": "${bridge.output.answer}"})  # read .answer field
+    return _graph(
+        [bridge, after],
+        [(START_ID, "bridge"), ("bridge", "after"), ("after", END_ID)],
+        outputs=[FlowOutput(name="r", from_="${after.output}")],
+    )
+
+
+def map_with_inner_pause():
+    """Parent: MAP over ${input.items} -> each clone of inner_pause_child -> END_ID-list."""
+    child = _inner_pause_child()
+    each = MapNode(
+        "each",
+        flow_id="inner_pause_child",
+        child=child,
+        child_inputs=child.nodes[child.start_id].params,
+    )
+    stamp_reads(each, {"over": "${input.items}", "payload": "${item}"})
+    return _graph(
+        [each],
+        [(START_ID, "each"), ("each", END_ID)],
+        outputs=[FlowOutput(name="results", from_="${each.output}")],
+    )
+
+
+def test_ledger_attributes_exist():
+    """FlowEngine declares the empty ledger + parent-pointer fields."""
+    g = _graph(
+        [FuncNode("a", lambda p: {"output": 1})],
+        [(START_ID, "a"), ("a", END_ID)],
+        outputs=[FlowOutput(name="r", from_="${a.output}")],
+    )
+    engine = FlowEngine(g)
+    assert engine.expansions == []
+    assert engine._spawner_expansion == {}
+
+
+def test_ledger_empty_for_static_flow():
+    """A flow with no REF/MAP/AGENT-pause leaves `expansions` empty after a complete run.
+    A static flow has no spawners to fire."""
+    g = _graph(
+        [FuncNode("a", lambda p: {"output": 1})],
+        [(START_ID, "a"), ("a", END_ID)],
+        outputs=[FlowOutput(name="r", from_="${a.output}")],
+    )
+    engine = FlowEngine(g)
+    list(engine.run())
+    assert engine.expansions == []
+
+
+def test_ledger_records_call_expansion():
+    """A CALL spawner adds ONE CallExpansion to the top-level ledger; the cloned
+    child's pause leaves `bridge` EXPANDED but the ledger entry is independent."""
+    from agent_compose.suspension.expansions import CallExpansion
+    g = call_with_inner_pause()
+    engine = FlowEngine(g, run_inputs={"payload": "go"})
+    list(engine.run())  # parks at the inner ask
+    calls = [e for e in engine.expansions if isinstance(e, CallExpansion)]
+    assert len(calls) == 1
+    assert calls[0].spawner_id == "bridge"
+    assert calls[0].record == {"payload": "go"}
+
+
+def test_ledger_records_map_expansion_with_records():
+    """A MAP spawner adds ONE MapExpansion with one record per element."""
+    from agent_compose.suspension.expansions import MapExpansion
+    g = map_with_inner_pause()
+    engine = FlowEngine(g, run_inputs={"items": ["a", "b"]})
+    list(engine.run())  # parks at both element leaves
+    maps = [e for e in engine.expansions if isinstance(e, MapExpansion)]
+    assert len(maps) == 1
+    assert maps[0].spawner_id == "each"
+    assert len(maps[0].records) == 2
+    # records carry the per-element binding (payload from ${item}):
+    payloads = sorted(r.get("payload") for r in maps[0].records)
+    assert payloads == ["a", "b"]
+
+
+def test_ledger_records_agent_expansion_per_pause(monkeypatch):
+    """A multi-pause AGENT creates ONE AgentExpansion whose segments list grows per pause."""
+    from langchain_core.messages import AIMessage
+    import agent_compose.llm_clients as llm
+    from agent_compose import load_flow
+    from agent_compose.suspension.expansions import AgentExpansion
+    from tests.engine.test_agent_continuation import _chat, _ask, ASK
+    chat = _chat([
+        _ask({"question": "q1?"}, "q1"),
+        _ask({"question": "q2?"}, "q2"),
+        AIMessage(content="FINAL"),
+    ])
+    monkeypatch.setattr(llm, "model_from_config", lambda cfg: chat)
+    loaded = load_flow(ASK)
+    from agent_compose.compose.run import run_flow, resume_command
+    rec = run_flow(loaded, {})  # parks at pause 1
+    agents = [e for e in rec.engine.expansions if isinstance(e, AgentExpansion)]
+    assert len(agents) == 1
+    assert len(agents[0].segments) == 1  # one segment so far
+    # in-memory resume the first pause to trigger segment 2:
+    cmd = resume_command(loaded, rec.pause_reasons[0], "first")
+    list(rec.engine.resume(commands=[cmd]))
+    assert len(agents[0].segments) == 2  # now two segments on the SAME AgentExpansion
+
+
+def test_nested_call_inside_map_is_descriptor_child():
+    """A MAP whose child contains a CALL: the inner CallExpansion lives in
+    map_desc.children_per_element[i], NOT in engine.expansions top-level."""
+    # Build a MAP whose child has its own CALL inside:
+    inner_child = _inner_pause_child()
+    nested_call_node = CallNode("inner_bridge", flow_id="inner_pause_child",
+                                child=inner_child,
+                                child_inputs=inner_child.nodes[inner_child.start_id].params)
+    stamp_reads(nested_call_node, {"payload": "${input.payload}"})  # parent body input
+    parent_child = _graph(
+        [nested_call_node],
+        [(START_ID, "inner_bridge"), ("inner_bridge", END_ID)],
+        outputs=[FlowOutput(name="result", from_="${inner_bridge.output.answer}")],
+    )
+    each = MapNode("each", flow_id="parent_child", child=parent_child,
+                   child_inputs=parent_child.nodes[parent_child.start_id].params)
+    stamp_reads(each, {"over": "${input.items}", "payload": "${item}"})
+    parent = _graph(
+        [each],
+        [(START_ID, "each"), ("each", END_ID)],
+        outputs=[FlowOutput(name="r", from_="${each.output}")],
+    )
+    from agent_compose.suspension.expansions import CallExpansion, MapExpansion
+    engine = FlowEngine(parent, run_inputs={"items": ["a"]})
+    list(engine.run())  # parks deep inside element 0
+    # Top-level: exactly ONE MapExpansion. No top-level CallExpansion.
+    top_calls = [e for e in engine.expansions if isinstance(e, CallExpansion)]
+    top_maps = [e for e in engine.expansions if isinstance(e, MapExpansion)]
+    assert len(top_calls) == 0
+    assert len(top_maps) == 1
+    # Element 0's children carries the inner CallExpansion:
+    elem_kids = top_maps[0].children_per_element[0]
+    assert len(elem_kids) == 1
+    assert isinstance(elem_kids[0], CallExpansion)
+    assert elem_kids[0].spawner_id.endswith("/inner_bridge")  # namespaced under each#0

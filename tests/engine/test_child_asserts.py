@@ -1,0 +1,139 @@
+"""A def's / child's `asserts:` enforced at the REF/MAP child seam.
+
+A `def` may declare `asserts:`. When the def runs via a `call` (REF once, MAP per
+element), the engine enforces its two-phase asserts against the child pool: boundary
+(`${inputs}`/`${system}`) before the child runs, post (`${X.output}`) after it terminates.
+A failed child assert fails the parent call node (the "subflow … failed" channel) -> the
+parent run fails.
+"""
+
+import pytest
+
+from agent_compose.compose import LoadError, load_flow, run_flow
+
+# `checked` def: doubles its int input; boundary asserts n>=0, post asserts the output < 100.
+_CHECKED_DEF = """
+defs:
+  checked:
+    input:
+      n: int
+    nodes:
+      x:
+        kind: code
+        code: tests.engine._compose_codefns:double
+        input:
+          n: ${input.n}
+        output: int
+    output: ${x.output}
+    asserts:
+      - "${input.n} >= 0"
+      - "${x.output} < 100"
+"""
+
+_REF_FLOW = f"""
+id: d
+name: d
+input:
+  v: int
+{_CHECKED_DEF}
+nodes:
+  call_it:
+    kind: call
+    call: checked
+    input:
+      n: ${{input.v}}
+output: ${{call_it.output}}
+"""
+
+_MAP_FLOW = f"""
+id: dm
+name: dm
+input:
+  vs: list[int]
+{_CHECKED_DEF}
+nodes:
+  map_it:
+    kind: map
+    call: checked
+    over: ${{input.vs}}
+    input:
+      n: ${{item}}
+output: ${{map_it.output}}
+"""
+
+
+def test_def_with_asserts_loads():
+    load_flow(_REF_FLOW)
+
+
+# --- REF: non-vacuous boundary + post pairs, run through expansion. The same parent flow
+# stays `succeeded` with a satisfying value AND fails with a violating one (the eager
+# boundary eval in _apply_enqueue / the child END_ID pool-scoped post-assert). #
+def test_ref_child_boundary_assert_satisfying_value_succeeds():
+    out = run_flow(load_flow(_REF_FLOW), {"v": 5})           # 5 >= 0 -> boundary holds
+    assert out.status == "succeeded"
+    assert out.output == 10
+
+
+def test_ref_child_boundary_assert_violating_value_fails():
+    res = run_flow(load_flow(_REF_FLOW), {"v": -1})          # -1 violates ${input.n} >= 0
+    assert res.status == "failed"                            # eager boundary eval in _apply_enqueue
+    assert "assert failed" in res.error
+
+
+def test_ref_child_post_assert_satisfying_value_succeeds():
+    out = run_flow(load_flow(_REF_FLOW), {"v": 5})           # x=10 < 100 -> post holds
+    assert out.status == "succeeded"
+
+
+def test_ref_child_post_assert_violating_value_fails():
+    res = run_flow(load_flow(_REF_FLOW), {"v": 60})          # x=120 violates ${x.output} < 100
+    assert res.status == "failed"                            # child END_ID pool-scoped post-assert
+    assert "assert failed" in res.error
+
+
+# --- MAP: non-vacuous per-element boundary pair, run through expansion. The boundary
+# asserts fire PER ELEMENT in the MAP arm's eager eval (each element's baked record); the
+# same flow succeeds when all elements satisfy AND fails on one violating one. #
+def test_map_child_asserts_all_elements_satisfy_succeeds():
+    res = run_flow(load_flow(_MAP_FLOW), {"vs": [1, 2, 3]})          # every element >= 0
+    assert res.status == "succeeded" and res.output == [2, 4, 6]     # over-order join
+
+
+def test_map_child_assert_one_violating_element_fails():
+    res = run_flow(load_flow(_MAP_FLOW), {"vs": [1, -1, 3]})         # element -1 violates ${input.n} >= 0
+    assert res.status == "failed"                                    # per-element eager boundary eval
+    assert "assert failed" in res.error
+
+
+# --- a failing CALL/MAP expansion leaves NO orphan descriptor ----------------------------- #
+# `_apply_enqueue` creates the Call/MapExpansion descriptor before `_grow_*` but attaches it
+# to `eng.expansions` only AFTER `_grow_*` succeeds, so a boundary-assert raise inside the
+# helper leaves the ledger clean (no orphan that a later snapshot could serialize). Driven via
+# FlowEngine directly to inspect `eng.expansions` (run_flow only exposes `.engine` on a pause).
+from agent_compose.compile.model import START_ID
+from agent_compose.events import RunFailed
+from agent_compose.runtime.engine import FlowEngine
+from agent_compose.state.pool import TypedVariablePool
+
+
+@pytest.mark.parametrize("num_workers", [0, 4])
+def test_ref_boundary_failure_leaves_no_orphan_descriptor(num_workers):
+    loaded = load_flow(_REF_FLOW)
+    pool = TypedVariablePool()
+    pool.set(START_ID, {"v": -1})                       # violates ${input.n} >= 0 -> _grow_call raises
+    eng = FlowEngine(loaded.compiled, pool, num_workers=num_workers)
+    events = list(eng.run())
+    assert isinstance(events[-1], RunFailed)
+    assert eng.expansions == []                          # the failed CALL left no orphan descriptor
+
+
+@pytest.mark.parametrize("num_workers", [0, 4])
+def test_map_boundary_failure_leaves_no_orphan_descriptor(num_workers):
+    loaded = load_flow(_MAP_FLOW)
+    pool = TypedVariablePool()
+    pool.set(START_ID, {"vs": [1, -1]})                 # element 1 violates -> _grow_map raises
+    eng = FlowEngine(loaded.compiled, pool, num_workers=num_workers)
+    events = list(eng.run())
+    assert isinstance(events[-1], RunFailed)
+    assert eng.expansions == []                          # the failed MAP left no orphan descriptor

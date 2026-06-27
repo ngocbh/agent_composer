@@ -1,0 +1,126 @@
+"""Unit tests for TypedVariablePool.
+
+Feature -> contract:
+- set / get_segment / get                : typed read/write of a node's single value
+- resolve(head, rest)                   : backs ${...}; structured traversal
+- set with declared type                : write-time type-drift detection
+- dumps / loads                         : lossless full-pool round-trip
+"""
+
+import pytest
+
+from agent_compose.compile.model import START_ID
+from agent_compose.state.pool import TypedVariablePool
+from agent_compose.state.segments import SegmentError, SegmentType
+
+
+def test_set_and_get():
+    pool = TypedVariablePool()
+    pool.set("n1", "hello")
+    assert pool.get("n1") == "hello"
+    assert pool.get_segment("n1").value_type == SegmentType.STRING
+    # a missing node resolves to the default
+    assert pool.get("missing", default="d") == "d"
+
+
+def test_get_whole_object_value():
+    # "multiple outputs" are fields of one object value, read back whole.
+    pool = TypedVariablePool()
+    pool.set("n1", {"answer": "txt", "score": 0.8})
+    assert pool.get("n1") == {"answer": "txt", "score": 0.8}
+    assert pool.get("nope") is None
+
+
+def test_resolve_node_first_and_structured():
+    # `.output` is a SYNTACTIC discriminator the resolver SKIPS — store the
+    # node's value directly (do NOT wrap with `{"output": ...}`, which would only test
+    # the dict-key arm by accident).
+    pool = TypedVariablePool()
+    pool.set("reviewer", {"ratio": 21.5, "nested": {"k": "v"}})
+    # ${reviewer.output} (2-segment) returns the whole stored value
+    assert pool.resolve("reviewer", ["output"]) == {"ratio": 21.5, "nested": {"k": "v"}}
+    # ${reviewer.output.ratio} (3-segment) walks one level in
+    assert pool.resolve("reviewer", ["output", "ratio"]) == 21.5
+    assert pool.resolve("reviewer", ["output", "nested", "k"]) == "v"
+    # missing path -> None, not an error
+    assert pool.resolve("reviewer", ["output", "absent"]) is None
+    assert pool.resolve("ghost", ["output"]) is None
+
+
+def test_retired_heads_resolve_none():
+    # `node` and `ref_outputs` were unified into `<id>.output` — they
+    # are now just unknown heads and resolve to None.
+    pool = TypedVariablePool()
+    pool.set("reviewer", "txt")
+    assert pool.resolve("node", ["reviewer", "output"]) is None
+    assert pool.resolve("ref_outputs", ["reviewer", "output"]) is None
+
+
+def test_resolve_inputs_and_system():
+    pool = TypedVariablePool()
+    pool.set(START_ID, {"topic": "ACME"})  # ${input.X} ≡ store[START_ID].X
+    assert pool.resolve("input", ["topic"]) == "ACME"  # the flow's run args
+    assert pool.resolve("input", ["missing"]) is None
+    assert pool.resolve("system", ["anything"]) is None  # ambient namespace, unseeded
+    # `parent` is retired — it is now just an unknown head -> None
+    assert pool.resolve("parent", ["threshold"]) is None
+    assert not hasattr(pool, "parent")
+    assert pool.resolve("unknown_ns", ["x"]) is None
+
+
+def test_subflow_outputs_resolve_via_node_first_head():
+    # A REF/subflow node's value lives under its own id in `store` and resolves via
+    # the node-first `<id>.output` head (`.output` is a syntactic SKIP).
+    pool = TypedVariablePool()
+    pool.set("child_ref", "child-result")
+    assert pool.resolve("child_ref", ["output"]) == "child-result"
+
+
+def test_declared_type_drift_raises():
+    pool = TypedVariablePool()
+    # a node declaring an integer output but emitting a string fails at the write
+    with pytest.raises(SegmentError):
+        pool.set("n1", "twelve", declared=SegmentType.INTEGER)
+    # the good case writes through
+    pool.set("n1", 12, declared=SegmentType.INTEGER)
+    assert pool.get("n1") == 12
+
+
+def test_pool_set_accepts_shape_and_enforces():
+    from agent_compose.state.segments import Shape
+
+    pool = TypedVariablePool()
+    action = Shape(seg_type=SegmentType.STRING, tags=frozenset({"Approve", "Reject"}))
+    pool.set("n", "Approve", declared=action)
+    assert pool.get("n") == "Approve"
+    with pytest.raises(SegmentError):
+        pool.set("n", "approve", declared=action)
+
+
+def test_inputs_resolve_via_start_store():
+    # the standalone `inputs` namespace (+ add_inputs e08) is retired. ${input.X}
+    # resolves to store[START_ID].X — the START_ID node's committed bound-input record (e08 now
+    # lives on StartNode.run, covered by the start-node / run_flow tests).
+    pool = TypedVariablePool()
+    pool.set(START_ID, {"window": 30, "note": "anything"})
+    assert pool.resolve("input", ["window"]) == 30
+    assert pool.resolve("input", ["note"]) == "anything"
+    assert not hasattr(pool, "add_inputs")
+    assert "inputs" not in TypedVariablePool.model_fields
+
+
+def test_full_pool_round_trip():
+    pool = TypedVariablePool()
+    pool.set("n1", {"a": 1, "b": [1.5, 2.5]})
+    pool.set("flag_node", True)
+    pool.set("n2", ["ACME", "BETA"])
+    pool.set(START_ID, {"as_of_date": "2026-06-05"})  # the flow's run args (the START_ID record)
+
+    back = TypedVariablePool.loads(pool.dumps())
+
+    assert back.get("n1") == {"a": 1, "b": [1.5, 2.5]}
+    assert back.get_segment("flag_node").value_type == SegmentType.BOOLEAN
+    assert back.get_segment("n2").value_type == SegmentType.LIST_STRING
+    assert back.resolve("input", ["as_of_date"]) == "2026-06-05"  # store[START_ID] survives dumps/loads
+    # types survived: flag is still a real bool, not int
+    assert back.get("flag_node") is True

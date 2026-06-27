@@ -1,0 +1,36 @@
+# e06 — type mismatch at a typed `call` boundary.
+#
+# A `call` applies a callable by signature; the callee's declared input types are
+# checked against the bound sources (structural equivalence, §0c C10). Here the callee
+# `research-one` (seed 03) declares  topic: str , but we bind it from a float-typed
+# node output. Sink bindings carry no type of their own — the type comes from the
+# SOURCE — so the mismatch surfaces at the callee boundary.
+#
+# Should fail with:  call.topic — child expects `str`, source is `float`.
+# Pins: L3 (loud + located) at the cross-flow `call` signature check.
+
+id: err-type-mismatch-ref
+name: err_type_mismatch_ref
+description: (negative) bind a float-typed output to a `call` child input declared str.
+
+input:
+  topic: str
+
+uses:
+  research-one: research-one      # external callee (resolved by the test's child_resolver)
+
+nodes:
+  score:
+    kind: agent
+    input:
+      topic: ${input.topic}
+    output: float                  # produces a number
+    prompt: "Rate ${topic}'s relevance in [-1, 1]. Output only the number."
+
+  call:
+    kind: call
+    call: research-one           # callee declares  topic: str
+    input:
+      topic: ${score.output}      # ERROR: float bound to a str-typed callee input
+
+output: ${call.output}

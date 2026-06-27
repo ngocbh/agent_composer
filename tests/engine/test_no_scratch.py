@@ -1,0 +1,41 @@
+"""Structural-purity lock-in: scratch is fully eliminated.
+
+AGENT rides its memo as graph data (the resume_agent continuation) and R
+delivers HUMAN_INPUT/WAIT answers as the parked leaf's Output — so NO node reads scratch.
+This pins that the field + helpers are gone and that no node source even references the
+word `scratch`.
+"""
+
+import importlib
+import inspect
+import pkgutil
+
+from agent_compose.state.pool import TypedVariablePool
+
+
+def test_pool_has_no_scratch():
+    p = TypedVariablePool()
+    assert not hasattr(p, "scratch")
+    assert not hasattr(p, "scratch_get") and not hasattr(p, "scratch_set")
+
+
+def test_scratch_modules_gone():
+    for mod in ("agent_compose.nodes.scratch_cap",
+                "agent_compose.nodes.agent.scratch"):
+        try:
+            importlib.import_module(mod)
+            assert False, f"{mod} still exists"
+        except ModuleNotFoundError:
+            pass
+
+
+def test_no_node_source_reads_scratch():
+    # walk the nodes package source; no node run/source references 'scratch'
+    import agent_compose.nodes as nodes_pkg
+
+    seen = []
+    for _, name, _ in pkgutil.walk_packages(nodes_pkg.__path__, nodes_pkg.__name__ + "."):
+        src = inspect.getsource(importlib.import_module(name))
+        if "scratch" in src:
+            seen.append(name)
+    assert seen == [], f"scratch still referenced in: {seen}"

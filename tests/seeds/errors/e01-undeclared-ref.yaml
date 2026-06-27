@@ -1,0 +1,19 @@
+# e01 — Undeclared reference.
+# EXPECT: compile error — `${scor.output}` references no node (the node is `score`).
+# L3: loud + located — the message should point at the `outputs:` line below.
+
+id: err-undeclared-ref
+name: err_undeclared_ref
+
+input:
+  topic: str
+
+nodes:
+  score:
+    kind: agent
+    input:
+      topic: ${input.topic}
+    output: float
+    prompt: "Rate ${topic} in [-1, 1]; output only the number."
+
+output: ${scor.output}     # <-- typo: no node named `scor` (it's `score`)

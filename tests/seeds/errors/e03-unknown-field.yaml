@@ -1,0 +1,21 @@
+# e03 — Unknown record field.
+# EXPECT: compile error — `${score.output.confidence}` reads a field not on score's declared
+# output type {rating, rationale}. Dotted access into a record is type-checked (alang L3 / C3).
+
+id: err-unknown-field
+name: err_unknown_field
+
+input:
+  topic: str
+
+nodes:
+  score:
+    kind: agent
+    input:
+      topic: ${input.topic}
+    output:                    # an object type with exactly two fields
+      rating: float
+      rationale: str
+    prompt: "Score ${topic} as {rating, rationale}."
+
+output: ${score.output.confidence}   # <-- no `confidence` field on score's output
