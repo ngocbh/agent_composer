@@ -116,6 +116,27 @@ Arrows never reverse: a package imports only lower-level or peer packages. See t
 `structure` skill. An upward import means the code is in the wrong package (extract
 the shared contract to `common.py` / a leaf, or invert via a seam).
 
+## Located errors (precise source lines)
+
+A runtime failure points at the **exact YAML line** it originates from, not just the
+node header. The mechanism is a structured locator produced at the failure site and
+resolved to a line at the CLI boundary — never a text heuristic.
+
+- **`SourceSpan(node, kind, key)`** (in `events`, the leaf) — `kind ∈ {input, assert,
+  input_decl, field}`; `key` is the input name / assert expr / input-decl name / field
+  name; `node` is the node id, or `None` for a flow-level location.
+- **Carriers:** `NodeFailed.locator` (node-level) and `RunFailed.locator` /
+  `RunResult.locator` (flow-level). All default `None`.
+- **Producers:** `BindingError` stamps a node-less `input` span (`bind_params` knows the
+  param name, not the node); `eval_node`'s funnel fills the node id via `replace(loc,
+  node=node.id)` and emits an `assert` span at each of its three node-assert yields;
+  `StartNode.run` stamps an `input_decl` span on the e08 `SegmentError`; the engine's
+  seed step and `run.py` stamp `assert` spans for boundary / post-terminal asserts.
+- **Resolution:** the parser's sub-line maps (`node_input_lines`, `node_field_lines`,
+  `assert_lines`, `input_decl_lines`) map a span to a 1-based line; the CLI's `_locate`
+  + fallback chain (precise line → node-kind best field, e.g. a code node's `code:` →
+  node header → plain message) boxes it.
+
 ## Design-note template (step 3 of the workflow)
 
 Before coding any engine change, write this short note and confirm any non-obvious

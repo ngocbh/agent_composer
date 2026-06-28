@@ -184,27 +184,34 @@ flow has a cycle involving ['a', 'b']; flows must be acyclic
 
 A failure that happens **while the flow runs** — a node raises, a `code` node
 returns the wrong type, an `:?` required reference is missing at its use site —
-is shown the same way: a boxed `.yaml` frame pointed at the **node that failed**
-(via its source line), with the message below. So a runtime error reads like a
-compile error — you see *where* in the flow it broke, not an engine traceback:
+is shown the same way as a compile error: a boxed `.yaml` frame, with the message
+below. The frame points at the **precise line the failure originates from** — the
+input binding, the assert expression, the input declaration — not just the node
+header. So a runtime error reads like a compile error: you see *exactly* where in
+the flow it broke, not an engine traceback:
 
 ```console
 $ ac run e07-required-missing.yaml --input topic=climate   # as_of omitted
-╭─ e07-required-missing.yaml:19 ───────────────────────────────╮
-│   17                                                         │
+╭─ e07-required-missing.yaml:23 ───────────────────────────────╮
 │   18 nodes:                                                  │
-│ ❱ 19   report:                                               │
+│   19   report:                                               │
 │   20     kind: agent                                         │
 │   21     input:                                              │
 │   22       topic: ${input.topic}                             │
-│   23       as_of:  ${input.as_of:?as_of is required ...}     │
+│ ❱ 23       as_of:  ${input.as_of:?as_of is required ...}     │
+│   24     output: str                                         │
 ╰──────────────────────────────────────────────────────────────╯
 as_of is required for the report
 ```
 
-A failure with **no node behind it** — a false boundary/post `assert:`, or an
-input that can't be coerced to its declared type at the run boundary — has no
-node line to point at, so it prints the plain `run failed: <message>` line.
+When the exact line can't be pinned (e.g. a `code` callable that raises somewhere
+inside its body), the frame falls back to the **best line for the node's kind** —
+a code node's `code:` field — and then to the node header. A failure with no node
+behind it *and* no resolvable line prints the plain `run failed: <message>` line.
+
+Failures with **no node behind them** are still boxed at their precise line: a
+false boundary/post `assert:` boxes the offending `asserts:` expression, and an
+input that can't be coerced to its declared type boxes that input's declaration.
 
 ## Next
 

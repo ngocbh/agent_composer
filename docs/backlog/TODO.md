@@ -32,7 +32,11 @@ under "Roadmap".
   a node pre/post assert expr — via a structured `SourceSpan` locator produced at the failure site,
   carried on `NodeFailed`, and resolved by parser sub-line maps, with a kind fallback (a code node's
   `code:` line) then the node header then a plain message.~~ -- f7f4b60
-  Phase 2 (flow-level: post/boundary asserts + input-coercion via `RunResult.locator`) follows.
+- [x] ~~**Precise runtime-error source line (phase 2: flow-level).** Flow-level failures with no node
+  behind them now box their precise line too: a false post-terminal / boundary assert boxes the
+  `asserts:` expr, and a boundary input-coercion error boxes the input's declaration — via
+  `RunFailed.locator` / `RunResult.locator` (run + resume) and the `StartNode` e08 `input_decl`
+  locator.~~ -- ab29d17
 
 - [ ] **Pooled durable resume — make `resume()` drive-mode-aware + checkpoint `num_workers`.**
   `resume()` hardcodes the serial drain (`runtime/engine.py:389`); it should pick serial vs pooled
