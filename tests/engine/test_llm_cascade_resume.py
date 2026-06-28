@@ -1,0 +1,66 @@
+"""Durable resume must re-apply the CLI cascade BEFORE `restore` (the C1 fix).
+
+A cross-process resume recompiles the flow and rebuilds the live graph inside
+`FlowEngine.restore` (replay re-clones each CALL/MAP child). If the cascade is resolved
+*after* restore, the replayed child agents already hold the unresolved config. So
+`resume_flow` resolves the cascade on the recompiled flow before `restore`.
+"""
+
+import agent_composer.llm_clients as llm_clients_mod
+from agent_composer.compose.loader import load_flow
+from agent_composer.compose.run import resume_command, resume_flow, run_flow
+from agent_composer.suspension.checkpoint import RunCheckpoint
+
+# An AGENT(ask_user) inside a CALL child: the resume replays the CALL expansion, re-cloning
+# the inner agent. Top flow sets `provider`; the CLI layer (resume kwarg) sets `model`.
+_CALL_WRAPS_AGENT = """
+id: cag
+name: cag
+llm_config: {provider: anthropic}
+defs:
+  approver:
+    nodes:
+      agent: {kind: agent, prompt: go, controls: [ask_user], output: str}
+    output: ${agent.output}
+nodes:
+  gate:
+    kind: call
+    call: approver
+output: ${gate.output}
+"""
+
+
+def test_cli_cascade_survives_cross_process_resume_through_call(monkeypatch):
+    from langchain_core.messages import AIMessage
+
+    from tests.engine.test_agent_continuation import _ask, _chat
+
+    captured: list = []
+    chat = _chat([_ask({"question": "ok?"}, "q1"), AIMessage(content="FINAL")])
+
+    def fake_model_from_config(cfg):
+        captured.append(dict(cfg))
+        return chat
+
+    monkeypatch.setattr(llm_clients_mod, "model_from_config", fake_model_from_config)
+
+    loaded = load_flow(_CALL_WRAPS_AGENT)
+    rec = run_flow(loaded, {}, llm_config={"model": "claude-opus-4-8"})
+    assert rec.status == "paused"
+
+    # Cross-process: recompile fresh, resume from the round-tripped checkpoint with the SAME
+    # CLI layer. The inner agent's 2nd-segment model build must carry provider+model.
+    ckpt = RunCheckpoint.loads(rec.checkpoint.dumps())
+    fresh = load_flow(_CALL_WRAPS_AGENT)
+    captured.clear()
+    res = resume_flow(
+        fresh,
+        checkpoint=ckpt,
+        commands=[resume_command(loaded, rec.pause_reasons[0], "yes")],
+        llm_config={"model": "claude-opus-4-8"},
+    )
+    assert res.status == "succeeded" and res.output == "FINAL"
+    assert any(
+        c.get("provider") == "anthropic" and c.get("model") == "claude-opus-4-8"
+        for c in captured
+    )

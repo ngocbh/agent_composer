@@ -61,27 +61,6 @@ This directory (`docs/backlog/`) is tracked in git and published in the doc site
   nodes before remote pulls land.
 - [ ] **Multi-version selection** — beyond exact `<path>@<version>.yaml` filename match (ranges/latest).
 
-## Structured AGENT output — wire the declared shape into generation
-
-There are three parts to "an AGENT produces its declared output": **(a) declare** the type
-(`output:` ✓), **(b) enforce** it (the write boundary fails a mismatch ✓), and **(c) generate** it —
-*teach/constrain the model to emit that shape*. **(c) is missing.** Today every AGENT mode returns a
-plain string, `invoke`d with no structured-output constraint (`modes/plain.py`,
-`modes/tool_calling.py`); the declared `output:` Shape is never passed to the model. So an AGENT
-declaring a record/typed output just **fails at the boundary**.
-
-**Design space (decide):** derive a JSON schema from the node's `output:` Shape, then —
-- **native structured output** — langchain `with_structured_output(schema)` / provider
-  `response_format` (best fidelity where supported);
-- **tool-forcing** — bind a single "emit" tool whose args are the schema + force `tool_choice`;
-- **prompt-injection** — render the schema + "respond with JSON matching this" + parse (universal
-  fallback, least reliable);
-- **parse + retry** — parse text→shape, retry-with-error on failure.
-
-Open: which modes get it (plain vs tool_calling), per-provider capability detection + fallback chain,
-and the relationship to the boundary check. The **tool** half (below) and the FUTURE
-"structured AGENT output" item are the same theme. Needs a design pass (engine skill).
-
 ## Agent memory mechanisms
 
 An AGENT today is effectively a **bare, stateless LLM** per run (the `tool_calling` mode keeps only a
@@ -109,23 +88,20 @@ design pass.
 - [ ] **Typed tool args** — `ToolCall.args` is an untyped `name→source` dict (binder uses `type=None`).
   A typed `inputs: list[IOField]` on `ToolCall` would type-check tool args.
 
-## LLM config — flow-level requirement + cascade + lock
+## LLM config — per-field inherit opt-out (deferred extension)
 
-Today `llm_config` is **per-AGENT only** (a raw dict defaulting to `{}`). There is **no flow-level
-config and no propagation** — `LLMConfig`'s "unset fields inherit from global defaults" is
-aspirational. So an AGENT with no `llm_config` relies entirely on whatever `model_from_config`
-defaults at runtime; a flow can silently run on an unintended model.
+The cascade (per-field fill-the-gap, most-specific wins), optional flow-level config, whole-node
+`inherit: false` opt-out, and CLI config injection are **decided** and tracked in [TODO](TODO.md).
 
-**Proposal (decide the shape):**
-- **Require `llm_config` at least at the flow level** — a top-level section; loading an AGENT-bearing
-  flow with no resolvable config is loud.
-- **Cascade** — resolve a node's effective config most-specific-first: node → (sub)flow → parent flow
-  (a `call`/`uses:` child inherits the parent's flow-level config when it sets none).
-- **Lock vs overridable (the open fork)** — let the author choose per config whether it is **fixed**
-  (a caller cannot override it) or **default + overridable**. Open: the surface (a `lock: true` flag?),
-  precedence, whether per-field locking is needed.
+Deferred here: **per-field** inherit control. `inherit: false` is all-or-nothing — it drops the node
+out of the whole cascade. A finer knob ("inherit everything except `temperature`", or "pin only
+`model` and let the rest cascade") is possible but adds surface and precedence questions. Revisit only
+when a real flow needs partial inheritance.
 
-Needs a design pass (engine skill → cascade semantics from the functional model) before it's a TODO.
+Also deferred: **persisting the CLI config in the checkpoint.** The CLI cascade layer
+(`--provider`/`--model`) is not serialized into a checkpoint, so a cross-process durable resume must
+re-supply it via `resume_flow(..., llm_config=...)` (it is re-applied before `restore`). Baking it into
+the checkpoint would remove that host obligation but couples the persisted run to a CLI-time choice.
 
 ## Integration knobs (undecided)
 

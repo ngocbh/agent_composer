@@ -224,6 +224,7 @@ def resume_flow(
     checkpoint: Any = None,
     commands: Optional[List[Any]] = None,
     on_event: Optional[EventHook] = None,
+    llm_config: Optional[Dict[str, Any]] = None,
 ) -> RunResult:
     """
     Drive a suspended run to its next terminal via exactly one resume handle.
@@ -250,6 +251,11 @@ def resume_flow(
             releases). `None` is treated as an empty list.
         on_event (`Callable[[Any], None]`, *optional*, defaults to `None`):
             Called with each engine event as it occurs. Use it for progress reporting.
+        llm_config (`dict[str, Any]`, *optional*, defaults to `None`):
+            Outermost cascade layer (CLI `--provider`/`--model`); fills only the gaps a flow
+            leaves unset. On a durable resume the CLI config is NOT persisted across
+            processes, so the host must re-supply it; it is re-applied to the recompiled flow
+            before `restore`.
 
     Returns:
         `RunResult`:
@@ -263,6 +269,11 @@ def resume_flow(
     if (engine is None) == (checkpoint is None):
         raise ValueError("resume_flow requires exactly one of engine= or checkpoint=")
     if engine is None:
+        # Resolve the cascade BEFORE restore: restore's replay re-clones each CALL/MAP child
+        # from the static graph, so the effective config must be baked on first (the CLI layer
+        # is not persisted across processes — the host re-supplies it here). In-process resume
+        # via engine= already carries the resolved configs baked on the live graph.
+        resolve_llm_cascade(loaded.compiled, llm_config or {})
         engine = FlowEngine.restore(loaded.compiled, checkpoint)
 
     events: List[Any] = []
