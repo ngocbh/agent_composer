@@ -23,10 +23,16 @@ _SYSTEM_AMBIENTS = ("today", "now", "run_id")  # the ONLY valid ${system.X} ambi
 
 
 class FlowValidationError(ValueError):
-    """A flow graph is structurally invalid (cannot be compiled/run).
+    """
+    A flow graph is structurally invalid and cannot be compiled or run.
 
-    `errors` is the full accumulated list (the reference-wiring pass collects all
-    located problems); for the fail-fast structural checks it is the single message.
+    Raised by the graph/reference checkers and caught by the compose loader, which
+    re-raises it as a located [`LoadError`][agent_composer.LoadError].
+
+    Attributes:
+        errors (`list[str]`):
+            All accumulated located problems. The reference-wiring pass collects every
+            problem it finds; fail-fast structural checks carry the single message.
     """
 
     def __init__(self, message: str, errors: "list[str] | None" = None) -> None:

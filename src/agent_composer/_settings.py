@@ -21,10 +21,18 @@ DEFAULT_MODEL = "claude-sonnet-4-5"
 
 
 def default_llm_provider() -> str:
-    """Provider used when an ``LLMConfig`` leaves ``provider`` unset."""
+    """The provider used when an `LLMConfig` leaves `provider` unset.
+
+    Returns:
+        `str`: `$AGENT_COMPOSER_DEFAULT_PROVIDER`, or `"anthropic"` if unset.
+    """
     return os.environ.get("AGENT_COMPOSER_DEFAULT_PROVIDER", DEFAULT_PROVIDER)
 
 
 def default_llm_model() -> str:
-    """Model used when an ``LLMConfig`` leaves ``model`` unset."""
+    """The model used when an `LLMConfig` leaves `model` unset.
+
+    Returns:
+        `str`: `$AGENT_COMPOSER_DEFAULT_MODEL`, or `"claude-sonnet-4-5"` if unset.
+    """
     return os.environ.get("AGENT_COMPOSER_DEFAULT_MODEL", DEFAULT_MODEL)

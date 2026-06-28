@@ -15,6 +15,24 @@ from agent_composer.suspension.pause import HumanInputRequired
 
 
 class HumanInputNode(Node):
+    """
+    A structural gate that suspends the run for a person (deliver-as-Output model).
+
+    On its single run the node always emits `Pause(HumanInputRequired)` and parks. The host
+    satisfies it with a `DeliverAnswerCommand`, and the engine writes that answer as this node's
+    Output — the node never re-runs.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        prompt (`str`):
+            The text to show the human (rendered against the bound input record).
+        answer_schema (`list[dict]`, *optional*, defaults to `None`):
+            IOField-shaped description of the expected answer; defaults to `[]`.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.HUMAN_INPUT
 
     def __init__(

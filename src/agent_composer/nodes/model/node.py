@@ -17,6 +17,27 @@ from agent_composer.nodes.base import Node, NodeKind, Output
 
 
 class ModelNode(Node):
+    """
+    An ML-inference node — the kind is first-class, but the serving seam is not wired yet.
+
+    A MODEL node holds a `model_id` (+ optional weights/runtime hints) and is meant to delegate
+    inference to an injected ML-serving seam (the MODEL analogue of AGENT's LLM). That seam was
+    removed as dead plumbing, so [`run`][agent_composer.nodes.model.node.ModelNode.run] raises
+    until real serving lands.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        model_id (`str`):
+            The model identifier to serve.
+        weights_uri (`str`, *optional*, defaults to `None`):
+            Where the model weights live, if applicable.
+        runtime (`str`, *optional*, defaults to `None`):
+            A serving-runtime hint.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.MODEL
 
     def __init__(

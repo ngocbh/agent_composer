@@ -45,6 +45,27 @@ def resolve_until(until_src: Any, pool: TypedVariablePool) -> str:
 
 
 class WaitNode(Node):
+    """
+    The internal suspend-until primitive, in two modes (not authored directly).
+
+    EVENT mode (`event_spec` set) parks with `EventAwaited` until the host watcher delivers the
+    payload as this node's Output; TIMED mode parks with `ScheduledPause(resume_at=...)` (the
+    `until` source is pre-resolved into `inputs["until"]` by the engine bind seam). Both mirror
+    HUMAN_INPUT's deliver-as-Output model — the node always pauses on its single run.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        is_timed (`bool`, *optional*, defaults to `False`):
+            The timed/event discriminator; the timed `until` source rides `flow.wiring`.
+        event_spec (`dict`, *optional*, defaults to `None`):
+            EVENT mode: what to watch; defaults to `{}`.
+        poll (`dict`, *optional*, defaults to `None`):
+            EVENT mode: how often to re-check; defaults to `{}`.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.WAIT
 
     def __init__(

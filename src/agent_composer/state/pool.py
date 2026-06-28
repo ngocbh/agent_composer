@@ -33,6 +33,27 @@ from agent_composer.state.segments import (
 
 
 class TypedVariablePool(BaseModel):
+    """
+    The runtime variable store for one flow run.
+
+    A node produces exactly one typed value (`store[node_id]`), so "multiple outputs"
+    are fields of one object. `${input.X}` reads the synthesized START node's committed
+    record; `${system.X}` reads host-injected ambients. Backs the `${...}` resolver and
+    serializes losslessly for a durable checkpoint.
+
+    Attributes:
+        store (`dict[str, AnySegment]`):
+            Map of node id to that node's single produced value, as a discriminated
+            `Segment`. Read via `${<id>.output[.path]}`.
+        system (`dict[str, AnySegment]`):
+            Host-injected ambient namespace (run id / clock / tenant); reserved and
+            run-global. Read via `${system.<key>}`.
+        start_id (`str`, *optional*, defaults to `"__start__"`):
+            The enclosing flow's START node id, so `${input.X}` resolves to
+            `store[start_id].X`. The engine sets this per flow; the default is the
+            top-level convention for standalone pools.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     # node_id -> the node's single produced value (${<id>.output[.path]})
@@ -76,21 +97,25 @@ class TypedVariablePool(BaseModel):
         return seg.to_object() if seg is not None else default
 
     def resolve(self, head: str, rest: list[str]) -> Any:
-        """Resolve a parsed `${head.rest...}` reference to a plain value.
+        """
+        Resolve a parsed `${head.rest...}` reference to a plain value.
 
-        Namespaces:
-          input.<key>[.<path>...]   -> store[start_id].<key>
-          <node>.output[.<path>...] -> store[node_id].<path>  (`.output` is a
-                                       syntactic discriminator the resolver SKIPS)
-          system.<key>              -> system[key]  (host-ambient; reserved)
+        Recognizes three namespaces: `input.<key>[.<path>]` reads the START record,
+        `<node>.output[.<path>]` reads a node's value (`.output` is a syntactic
+        discriminator the resolver skips), and `system.<key>` reads a host ambient. An
+        unrecognized head resolves to `None` (the missing-ref-is-falsy contract);
+        legacy plural surfaces (`${outputs.X}`/`${inputs.X}`) are rejected at load time,
+        so the load-time guard — not this method — is the authoritative defense.
 
-        Legacy plural surfaces (`${outputs.X}` / `${inputs.X}`) are rejected at LOAD
-        time by `_classify_path` with a typo hint. At RUNTIME, an
-        unrecognized head (whether a legacy plural typo or a stray name) resolves to
-        None per the missing-ref-is-falsy contract (`when:` clauses route to default
-        rather than fail-loud). This is intentional but means a runtime-injected
-        legacy ref will silently propagate as None — the load-time guard is the
-        authoritative defense.
+        Args:
+            head (`str`):
+                The first reference segment: `input`, `system`, or a node id.
+            rest (`list[str]`):
+                The remaining dotted segments after the head (e.g. `["output", "ratio"]`).
+
+        Returns:
+            `Any`:
+                The resolved plain value, or `None` if any step is absent.
         """
         # Node-first head — `${<node>.output[.path]}` reads `store[<node>]` interior.
         # The literal `output` token is a syntactic discriminator and is SKIPPED.

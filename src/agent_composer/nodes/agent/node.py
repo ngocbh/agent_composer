@@ -75,6 +75,36 @@ AgentEntry = Union[Fresh, Resume]
 
 
 class AgentNode(Node):
+    """
+    An LLM-backed node, configured by `mode` + `tools` + `controls` and entered two ways.
+
+    A `Fresh` entry renders `prompt` against the node's declared inputs and runs the selected
+    `mode`'s loop; a `Resume` entry is the delimited continuation of an `ask_user` control pause
+    (see the module docstring for the entry split). The node builds its own chat model from
+    `llm_config` and gives the mode the rendered prompt, tools, and controls.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        entry (`AgentEntry`, *optional*, defaults to `None`):
+            The `Fresh | Resume` entry. `None` builds a `Fresh` from `prompt` (the author path).
+        prompt (`str`, *optional*, defaults to `""`):
+            The author prompt, used only when `entry` is `None`.
+        tools (`list[str]`, *optional*, defaults to `None`):
+            Ordinary tool ids the mode may call (resolved from `agent_composer.tools`).
+        controls (`list[str]`, *optional*, defaults to `None`):
+            Control-tool ids (e.g. `ask_user`) that drive an engine effect.
+        llm_config (`dict`, *optional*, defaults to `None`):
+            Plain-dict model selection (normalized to `LLMConfig` by `model_from_config`).
+        mode (`str`, *optional*, defaults to `"plain"`):
+            The loop method; must be a registered mode.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+
+    Raises:
+        ValueError: If `mode` is unknown or a control id is not registered.
+    """
+
     kind = NodeKind.AGENT
 
     def __init__(

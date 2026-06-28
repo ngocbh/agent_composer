@@ -72,11 +72,28 @@ class FlowOutput:
 
 
 class CompiledFlow:
-    """The immutable compiled graph: nodes, edges, adjacency, and flow-owned input wiring.
+    """
+    The immutable compiled graph: nodes, edges, adjacency, and flow-owned input wiring.
 
-    Topology only — it holds no run state, so one instance can back many independent runs. The
-    sole mutation is `add_subgraph`, the runtime's append-only overlay used when a spawner node
-    expands the graph at run time.
+    Topology only — it holds no run state, so one instance can back many independent runs.
+    All mutable per-run state (which nodes/edges were taken or skipped) lives in the
+    runtime's state manager. The sole mutation is [`add_subgraph`][agent_composer.CompiledFlow.add_subgraph],
+    the runtime's append-only overlay used when a spawner node expands the graph at run time.
+
+    Attributes:
+        nodes (`dict[str, Node]`):
+            Map of node id to its `Node`. Includes the synthesized `START`/`END` boundary
+            nodes plus every authored node.
+        edges (`list[Edge]`):
+            All directed edges. Carries data edges (a producer output feeding a consumer
+            input group) and pure control/ordering edges alike.
+        outputs (`list[FlowOutput]`):
+            The declared `outputs:`; empty means the flow falls back to the raw terminal
+            node value.
+        wiring (`dict[str, dict[str, Any]]`):
+            Authoritative input wiring `wiring[node_id][param] -> source`, where source is
+            a `${...}` binding string or a literal. `edges` is its derived data-flow
+            projection.
     """
 
     def __init__(self, nodes: dict[str, Node], edges: list[Edge],

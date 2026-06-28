@@ -21,6 +21,23 @@ from agent_composer.state.seeding import apply_defaults, coerce_inputs
 
 
 class StartNode(Node):
+    """
+    The flow's parameter-binding boundary — internal-only, loader-synthesized, pure.
+
+    One per flow (the single root). Its params are the input names; the engine reads each source
+    from `flow.wiring[START_ID]` (the run-arg seed at top level, the call-arg edges in a child).
+    `run` coerces the wired args to declared types, shape-checks them, and fills declared defaults
+    for omitted inputs, returning the bound record as one object keyed by input name.
+
+    Args:
+        node_id (`str`):
+            The node's id (`ID` at top level; deep-namespaced in a child).
+        input_decls (`list`, *optional*, defaults to `None`):
+            The flow's `InputDecl`s; the params (and their defaults/required) derive from these.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.START
 
     #: Reserved id of the synthesized input boundary (the old `__start__` sentinel).

@@ -5,6 +5,10 @@ repo_url: https://github.com/ngocbh/agent-composer
 repo_name: ngocbh/agent-composer
 edit_uri: edit/main/docs/
 
+# This config lives in docs/; the paths below are resolved relative to it.
+docs_dir: .
+site_dir: ../site
+
 theme:
   name: material
   features:
@@ -34,6 +38,24 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [../src]
+          options:
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_source: false
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            members_order: source
+            docstring_section_style: table
+            filters: ["!^_"]
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -53,3 +75,4 @@ nav:
   - Flow syntax: syntax.md
   - Examples: examples.md
   - Python API: api.md
+  - API Reference: reference.md

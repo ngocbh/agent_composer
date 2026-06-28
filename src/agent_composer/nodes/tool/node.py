@@ -12,6 +12,21 @@ from agent_composer.nodes.base import Node, NodeKind, Output
 
 
 class ToolNode(Node):
+    """
+    A direct, deterministic invocation of one `TOOL_REGISTRY` entry (no LLM in the loop).
+
+    The node's bound input record is passed to the registry tool's `.invoke(...)`; the tool sees
+    only its own record, never the live pool.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        tool_id (`str`):
+            The registry key of the tool to invoke; an unknown id raises at run time.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.TOOL
 
     def __init__(self, node_id: str, *, tool_id: str, title=None) -> None:

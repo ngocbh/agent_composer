@@ -506,10 +506,31 @@ def _split_calls_aware(s: str, sep: str) -> list:
 
 
 def eval_binding(segments: list, resolve: Callable[[str], Any], item: Any = None) -> Any:
-    """A whole single `${...}` -> the typed value; embedded/literal -> a string.
+    """
+    Evaluate parsed binding segments to a value.
 
-    `item` is the MAP-body-local scope for `${item}` / `${item.path}`; `None` means no
-    item scope (and a `None` element resolves `${item}` to `None` — the two coincide)."""
+    A binding that is EXACTLY one `${...}` span resolves to the **typed** value of that
+    reference (a float stays a float, a list a list, an object a dict). A span embedded in
+    surrounding text — or a plain-text segment — is stringified and concatenated.
+
+    Args:
+        segments (`list[_Text | _Coalesce]`):
+            The parsed binding from [`parse_binding`][agent_composer.expr.parse_binding].
+        resolve (`Callable[[str], Any]`):
+            Resolves a reference path to its value (pool-agnostic seam); a missing
+            reference resolves to `None`.
+        item (`Any`, *optional*, defaults to `None`):
+            The MAP-body-local scope for `${item}` / `${item.path}`. `None` means no item
+            scope (a `None` element and "no scope" coincide).
+
+    Returns:
+        `Any`:
+            The typed value for a whole single span; otherwise the rendered string.
+
+    Raises:
+        `RequiredError`:
+            If a `${ref:?message}` atom is unbound.
+    """
     if len(segments) == 1 and isinstance(segments[0], _Coalesce):
         return _eval_coalesce(segments[0], resolve, item)
     parts: list = []
@@ -772,17 +793,32 @@ def _eval_prompt_span(interior: str, record: dict) -> Any:
 
 
 def render_template_record(text: str, record: dict) -> str:
-    """Render a strict-AGENT/HUMAN_INPUT prompt against its bound input `record`.
+    """
+    Render a strict AGENT / HUMAN_INPUT prompt against its bound input `record`.
 
     Each `${...}` span is a plain dotted reference (`${name}` / `${name.path}`) or a
     builtin call (`${ render_as_json(${name}, 4) }`, optionally `.field` on the result).
-    A reference resolves against `record` (a node's declared inputs); an unresolved ref
-    (unknown input, a dict-path miss, or a None value) RAISES `ExpressionError`. A call
-    invokes the named `expr.builtins.TEMPLATE_FNS` formatter over its resolved args.
-    Bare local-input refs only; the pool namespaces (`node`/`system`) are not in scope.
+    A reference resolves against `record` (a node's declared inputs); a call invokes the
+    named `expr.builtins.TEMPLATE_FNS` formatter over its resolved args. Bare local-input
+    refs only — the pool namespaces (`node`/`system`) are not in scope.
 
-    cf. `evaluate_when_record` (strict IF_ELSE), which returns None->falsy on the same
-    dotted miss rather than raising — the locked `when:` missing->falsy contract.
+    Unlike `evaluate_when_record` (strict IF_ELSE), which returns `None`->falsy on a
+    dotted miss, this renderer RAISES — the locked strict-prompt floor.
+
+    Args:
+        text (`str`):
+            The prompt template: literal text interspersed with `${...}` spans.
+        record (`dict`):
+            The node's bound input record; reference heads must be declared keys.
+
+    Returns:
+        `str`:
+            The fully rendered prompt with every span substituted by its string value.
+
+    Raises:
+        `ExpressionError`:
+            On an unbalanced span, an unresolved reference (unknown input, dict-path miss,
+            or `None` value), an unknown builtin, or a builtin that fails.
     """
     out: list = []
     i, n = 0, len(text)

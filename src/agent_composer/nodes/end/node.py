@@ -22,6 +22,29 @@ from agent_composer.nodes.binding import ParamDecl
 
 
 class EndNode(Node):
+    """
+    The flow's return boundary — internal-only, loader-synthesized.
+
+    One per flow (the single terminal); the run result is this node's committed value. RECORD mode
+    (a flow's `output:`) reproduces arity — 0 inputs -> None, 1 -> the bare value, >=2 -> a keyed
+    dict; LIST mode (a MAP fan-in) joins the element outputs into a list in `over` order. Use the
+    [`record`][agent_composer.nodes.end.node.EndNode.record] /
+    [`list_`][agent_composer.nodes.end.node.EndNode.list_] factories rather than the ctor.
+
+    Args:
+        node_id (`str`):
+            The node's id (`ID` at top level; deep-namespaced in a child).
+        output_names (`list[str]`, *optional*, defaults to `None`):
+            RECORD mode: one param per declared output. Mutually exclusive with `n`.
+        n (`int`, *optional*, defaults to `None`):
+            LIST mode: the element count. Mutually exclusive with `output_names`.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+
+    Raises:
+        ValueError: If not exactly one of `output_names` / `n` is given.
+    """
+
     kind = NodeKind.END
 
     #: Reserved id of the synthesized return boundary (the old `__end__` sentinel).

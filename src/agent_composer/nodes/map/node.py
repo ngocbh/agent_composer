@@ -24,6 +24,34 @@ from agent_composer.nodes.base import Enqueue, Node, NodeKind
 
 
 class MapNode(Node):
+    """
+    The `List.map` driver (`kind: map` + `over:`) — map a callable flow over a list (`list['a] -> list['b]`).
+
+    The MAP half of the REF/MAP pair (the REF half is
+    [`CallNode`][agent_composer.nodes.call.node.CallNode]). The `over` source is pre-resolved into
+    `inputs["over"]` by the engine bind seam; `run` returns one `Enqueue` per element. The engine
+    clones the baked child per element and fans the child ENDs into one list END. The spliced child
+    START owns omitted-input defaulting, so per-element call-args go raw.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        flow_id (`str`):
+            The id of the child flow to map.
+        parallel (`bool`, *optional*, defaults to `False`):
+            Inert — concurrency is the engine's `num_workers`; carried for the `over` case.
+        flow_version (`int`, *optional*, defaults to `None`):
+            A pinned child flow version, if any.
+        child (`Any`, *optional*, defaults to `None`):
+            The baked child flow (stamped at load); a `None` child raises at run time.
+        child_inputs (`list`, *optional*, defaults to `None`):
+            The child's input decls, read by compile validation and the per-element temp pool.
+        child_asserts (`Any`, *optional*, defaults to `None`):
+            The child's baked boundary asserts.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.MAP
 
     def __init__(self, node_id: str, *, flow_id: str, parallel: bool = False,

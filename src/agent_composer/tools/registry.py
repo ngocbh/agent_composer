@@ -20,11 +20,28 @@ TOOL_REGISTRY: dict[str, BaseTool] = {}
 
 
 def register_tool(tool_id: str) -> Callable:
-    """Register the decorated function as a tool under ``tool_id``.
+    """Register the decorated function as a tool under `tool_id`.
 
-    The function's docstring becomes the tool description the model sees. The
-    original function is returned unchanged; the built LangChain tool is stored
-    in ``TOOL_REGISTRY``. Raises on a duplicate id.
+    The function's docstring becomes the tool description the model sees. The original
+    function is returned unchanged; the built LangChain tool is stored in `TOOL_REGISTRY`.
+
+    Args:
+        tool_id (`str`):
+            The unique id to register under; a duplicate id raises.
+
+    Returns:
+        `Callable`: A decorator that registers its target and returns it unchanged.
+
+    Raises:
+        ValueError: If `tool_id` is already registered.
+
+    Example:
+        ```python
+        @register_tool("add")
+        def add(a: int, b: int) -> int:
+            "Add two integers."
+            return a + b
+        ```
     """
 
     def decorator(fn: Callable) -> Callable:
@@ -40,7 +57,18 @@ def register_tool(tool_id: str) -> Callable:
 
 
 def resolve_tools(tool_ids: list[str]) -> list[BaseTool]:
-    """Look up tools by id, raising a clear error on unknown names."""
+    """Look up tools by id.
+
+    Args:
+        tool_ids (`list[str]`):
+            The ids to resolve, in order.
+
+    Returns:
+        `list[BaseTool]`: The matching tools, in the same order as `tool_ids`.
+
+    Raises:
+        ValueError: If any id is not registered.
+    """
     resolved = []
     for tid in tool_ids:
         if tid not in TOOL_REGISTRY:

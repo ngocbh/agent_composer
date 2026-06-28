@@ -16,6 +16,26 @@ from pydantic import BaseModel, Field
 
 
 class HumanInputRequired(BaseModel):
+    """
+    A suspended node awaits a human's answer (a `HUMAN_INPUT` node, or an agent `ask_user`).
+
+    The host re-prompts on resume and delivers the answer as the parked leaf's Output.
+
+    Attributes:
+        type (`Literal["human_input_required"]`):
+            The discriminator tag for the `PauseReason` union.
+        prompt (`str`):
+            The text to show the human.
+        answer_schema (`list[dict]`, *optional*, defaults to `[]`):
+            IOField-shaped description of the expected answer; the CLI renders against it.
+        node_title (`str`, *optional*, defaults to `None`):
+            A human-friendly node title for display, if any.
+        node_id (`str`, *optional*, defaults to `None`):
+            Logical resumption identity — the node the answer is delivered to as its Output.
+        slot (`str`, *optional*, defaults to `None`):
+            Vestigial under the leaf-pause model (always `None`); pending plumbing cleanup.
+    """
+
     type: Literal["human_input_required"] = "human_input_required"
     prompt: str
     # IOField-shaped expected answer (loose dicts; the CLI renders against it).
@@ -30,6 +50,24 @@ class HumanInputRequired(BaseModel):
 
 
 class EventAwaited(BaseModel):
+    """
+    A suspended node awaits an external event (a `WATCH` composite's `WAIT`).
+
+    A watcher re-checks the condition on a poll cadence and, when it fires, resumes the
+    run by delivering the watcher payload as the node's Output.
+
+    Attributes:
+        type (`Literal["event_awaited"]`):
+            The discriminator tag for the `PauseReason` union.
+        event_spec (`dict`, *optional*, defaults to `{}`):
+            What to watch — a condition over a source.
+        poll (`dict`, *optional*, defaults to `{}`):
+            How often to re-check the condition.
+        node_id (`str`, *optional*, defaults to `None`):
+            Logical resumption identity. `None` means not host-resumable (a bare event an
+            external watcher satisfies; `resume_command` rejects it).
+    """
+
     type: Literal["event_awaited"] = "event_awaited"
     # what to watch (a condition over a source) + how often to re-check.
     event_spec: dict[str, Any] = Field(default_factory=dict)
@@ -41,6 +79,18 @@ class EventAwaited(BaseModel):
 
 
 class ScheduledPause(BaseModel):
+    """
+    A suspended node awaits a wall-clock time (a plain timed wait).
+
+    Attributes:
+        type (`Literal["scheduled_pause"]`):
+            The discriminator tag for the `PauseReason` union.
+        resume_at (`str`, *optional*, defaults to `None`):
+            ISO timestamp to wake at; `None` means "until poked".
+        node_id (`str`, *optional*, defaults to `None`):
+            Logical resumption identity — the node whose timed wait the host releases.
+    """
+
     type: Literal["scheduled_pause"] = "scheduled_pause"
     resume_at: Optional[str] = None  # ISO timestamp; None = "until poked"
     # LOGICAL resumption identity: the node whose timed wait the host releases.

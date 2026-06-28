@@ -52,17 +52,23 @@ def create_llm_client(
     clear `pip install 'agent-composer[<extra>]'` hint rather than a bare ImportError.
 
     Args:
-        provider: LLM provider name
-        model: Model name/identifier
-        base_url: Optional base URL for API endpoint
-        **kwargs: Additional provider-specific arguments
+        provider (`str`):
+            Provider name; case-insensitive. OpenAI-compatible names (`openai`, `xai`,
+            `deepseek`, `qwen`, `glm`, `minimax`, `openrouter`, `vllm`, …) route to the
+            OpenAI client; `ollama`/`anthropic`/`google`/`azure` route to their own.
+        model (`str`):
+            The provider-specific model id.
+        base_url (`str`, *optional*, defaults to `None`):
+            Override the provider's API endpoint; `None` uses the provider default.
+        **kwargs:
+            Additional provider-specific arguments forwarded to the client.
 
     Returns:
-        Configured BaseLLMClient instance
+        `BaseLLMClient`: A configured client whose `get_llm()` yields the chat model.
 
     Raises:
-        ValueError: If provider is not supported
-        ImportError: If the provider's optional dependency is not installed
+        ValueError: If `provider` is not supported.
+        ImportError: If the provider's optional dependency extra is not installed.
     """
     provider_lower = provider.lower()
 
@@ -117,6 +123,18 @@ def model_from_config(config) -> BaseChatModel:
     knobs apply only when they match the selected provider; transient errors get
     exponential-backoff retries. The returned model is ready for `.bind_tools(...)`. Shared
     by every LLM-backed engine seam (today the AGENT `llm_client`).
+
+    Args:
+        config (`LLMConfig` or `dict`):
+            The model selection. A `dict` is validated into an `LLMConfig` (raising on
+            unknown keys); unset `provider`/`model` inherit the env-based defaults.
+
+    Returns:
+        `BaseChatModel`: A langchain chat model, ready for `.bind_tools(...)`.
+
+    Raises:
+        ValueError: If the resolved provider is not supported.
+        ImportError: If the resolved provider's optional dependency extra is not installed.
     """
     if isinstance(config, dict):
         config = LLMConfig(**config)

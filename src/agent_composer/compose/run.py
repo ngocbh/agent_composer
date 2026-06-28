@@ -27,7 +27,7 @@ imports back.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 from agent_composer.events import RunAborted, RunFailed, RunPaused, RunSucceeded
 from agent_composer.expr import first_failing_assert
@@ -41,6 +41,9 @@ from agent_composer.state.seeding import (
 )
 from agent_composer.compose.loader import LoadedFlow
 
+if TYPE_CHECKING:
+    from agent_composer.suspension.commands import DeliverAnswerCommand
+
 EventHook = Callable[[Any], None]
 
 _STATUS: Dict[type, str] = {
@@ -53,34 +56,96 @@ _STATUS: Dict[type, str] = {
 
 @dataclass
 class RunResult:
-    """The outcome of one flow run — surface-agnostic.
+    """
+    The outcome of one flow run (or resume) — surface-agnostic.
 
-    `events` holds the raw engine event objects in order; a host serializes them
-    as it sees fit. `input` is the run-arg dict (singular for surface symmetry).
+    Returned by [`run_flow`][agent_composer.run_flow] and
+    [`resume_flow`][agent_composer.compose.run.resume_flow] for every terminal,
+    including failures and pauses; these functions never raise on a flow failure.
+
+    Attributes:
+        input (`dict[str, Any]`):
+            The coerced run-argument dict (singular, for symmetry across surfaces).
+            Empty `{}` on a resume, which carries no fresh run arguments.
+        status (`str`):
+            The terminal state: one of `"succeeded"`, `"failed"`, `"paused"`, or
+            `"aborted"`.
+        output (`Any`, *optional*, defaults to `None`):
+            The flow's single terminal value — a scalar or a multi-field object.
+            Set only when `status == "succeeded"`.
+        error (`str`, *optional*, defaults to `None`):
+            Human-readable failure detail. Set only when `status == "failed"`
+            (including a false post-terminal assert).
+        events (`list[Any]`):
+            The raw engine event objects, in emission order. A host serializes them
+            however it sees fit.
+        checkpoint (`Any`, *optional*, defaults to `None`):
+            A serializable `RunCheckpoint` for durable, cross-process resume. Set
+            only when `status == "paused"`.
+        engine (`FlowEngine`, *optional*, defaults to `None`):
+            The live engine for fast in-process resume. Set only when
+            `status == "paused"`.
+        pause_reasons (`list[Any]`):
+            The self-addressing `PauseReason`s to act on before resuming. Non-empty
+            only when `status == "paused"`.
     """
 
     input: Dict[str, Any]
     status: str
-    output: Any = None  # the flow's single (possibly object) terminal value
+    output: Any = None
     error: Optional[str] = None
     events: List[Any] = field(default_factory=list)
-    checkpoint: Optional[Any] = None  # RunCheckpoint when paused (durable)
-    engine: Optional[Any] = None  # live FlowEngine when paused (fast in-process)
-    pause_reasons: List[Any] = field(default_factory=list)  # self-addressing PauseReasons
+    checkpoint: Optional[Any] = None
+    engine: Optional[Any] = None
+    pause_reasons: List[Any] = field(default_factory=list)
 
 
 def run_flow(
     loaded: LoadedFlow,
     inputs: Dict[str, Any],
     *,
-    run_id: Optional[str] = None,  # host-injected run id (${system.run_id}); minted if omitted
+    run_id: Optional[str] = None,
     on_event: Optional[EventHook] = None,
 ) -> RunResult:
-    """Coerce `inputs`, seed the pool, enforce asserts, and drive the flow to a terminal.
+    """
+    Coerce inputs, seed the variable pool, enforce asserts, and drive the flow to a terminal.
 
-    Returns a `RunResult` mirroring `run_flow`'s shape. A false BOUNDARY assert returns a
-    `status="failed"` result BEFORE the engine runs (no node executes); a false
-    POST-TERMINAL assert flips an otherwise-succeeded run to `status="failed"`.
+    Never raises on a flow failure: a failed, paused, or aborted run is returned as a
+    `RunResult` with a non-`"succeeded"` status (a `RunFailed` is an engine event, not an
+    exception). Compile-time errors of a bad flow surface earlier, in
+    [`load_flow`][agent_composer.load_flow]. Asserts run in two phases — boundary asserts
+    (`${input}`/`${system}`-only) fire *before* any node runs and return `status="failed"`
+    on a false one; post-terminal asserts (`${<id>.output}`) run *after* the flow reaches a
+    terminal and flip an otherwise-succeeded run to `"failed"`.
+
+    Args:
+        loaded (`LoadedFlow`):
+            A compiled, validated flow from [`load_flow`][agent_composer.load_flow].
+            Carries the IR, the declared input schema, and the assert sets.
+        inputs (`dict[str, Any]`):
+            Run arguments keyed by declared input name. Each value is coerced to its
+            declared type; names omitted here fall back to their declared defaults.
+        run_id (`str`, *optional*, defaults to `None`):
+            Host-injected run id, readable in the flow as `${system.run_id}`. When
+            `None`, a fresh id is minted per run.
+        on_event (`Callable[[Any], None]`, *optional*, defaults to `None`):
+            Called with each engine event as it occurs (`NodeStarted`, `RunSucceeded`,
+            `RunPaused`, `RunFailed`, `RunAborted`). Use it for progress reporting.
+
+    Returns:
+        `RunResult`:
+            The run outcome. `status` is one of `"succeeded"`, `"failed"`, `"paused"`,
+            or `"aborted"`; `output` is set on success, and `pause_reasons` plus the
+            resume handles (`engine`, `checkpoint`) are set on a pause.
+
+    Example:
+        ```python
+        from agent_composer import load_flow, run_flow
+
+        loaded = load_flow(open("hello.yaml").read(), search_paths=["."])
+        result = run_flow(loaded, {"name": "Ada"})
+        print(result.status, result.output)  # succeeded ...
+        ```
     """
     coerced = apply_defaults(
         loaded.input, coerce_inputs(loaded.input, inputs)
@@ -151,12 +216,40 @@ def resume_flow(
     commands: Optional[List[Any]] = None,
     on_event: Optional[EventHook] = None,
 ) -> RunResult:
-    """Drive a suspended run to its next terminal via EITHER handle.
+    """
+    Drive a suspended run to its next terminal via exactly one resume handle.
 
-    Resume from a live `engine=` (fast in-process) OR a (deserialized) `checkpoint=`
-    (durable, cross-process) — exactly one. External `commands` (the injected human
-    answer / wait release) are applied before the run continues. Mirrors `run_flow`'s
-    terminal-event loop and POST-TERMINAL asserts; a re-pause carries fresh handles.
+    Resume from a live `engine=` (fast, in-process) or a deserialized `checkpoint=`
+    (durable, cross-process) — pass exactly one. The `commands` (typically the injected
+    human answer or a wait release, built with
+    [`resume_command`][agent_composer.compose.run.resume_command]) are applied before the
+    run continues. Mirrors [`run_flow`][agent_composer.run_flow]'s terminal-event loop and
+    post-terminal asserts; if the run pauses again, the returned result carries fresh handles.
+
+    Args:
+        loaded (`LoadedFlow`):
+            The same compiled flow the suspended run was started from. Supplies the IR
+            (to restore from a checkpoint) and the post-terminal assert set.
+        engine (`FlowEngine`, *optional*, defaults to `None`):
+            A live engine from a paused `RunResult.engine`. Mutually exclusive with
+            `checkpoint`.
+        checkpoint (`Any`, *optional*, defaults to `None`):
+            A serializable snapshot from a paused `RunResult.checkpoint`, possibly
+            deserialized in another process. Mutually exclusive with `engine`.
+        commands (`list[Any]`, *optional*, defaults to `None`):
+            Engine commands to apply before resuming (e.g. delivered answers, wait
+            releases). `None` is treated as an empty list.
+        on_event (`Callable[[Any], None]`, *optional*, defaults to `None`):
+            Called with each engine event as it occurs. Use it for progress reporting.
+
+    Returns:
+        `RunResult`:
+            The next terminal outcome, with `input={}` (a resume carries no fresh run
+            arguments). On a re-pause it carries new `engine`/`checkpoint`/`pause_reasons`.
+
+    Raises:
+        `ValueError`:
+            If both or neither of `engine` and `checkpoint` are provided.
     """
     if (engine is None) == (checkpoint is None):
         raise ValueError("resume_flow requires exactly one of engine= or checkpoint=")
@@ -198,14 +291,37 @@ def resume_flow(
     )
 
 
-def resume_command(loaded: LoadedFlow, reason: Any, value: Any):
-    """Map a host-resumable `PauseReason` + an answer `value` to the engine command that
-    delivers it. Dispatch on the reason SHAPE, never a static-graph lookup: the parked
-    node may be a runtime-namespaced live id (e.g. `call_sub/w`, `agent/__ask#q1`) that exists
-    only on `engine.flow.nodes` — `_apply_command` does the live lookup. A reason carrying a
-    `node_id` delivers the answer as that leaf's Output (HUMAN_INPUT + WAIT release: value=None;
-    the agent `ask_user` pause is now a namespaced HUMAN_INPUT leaf — no scratch
-    coordinate). No `node_id` => not host-resumable (a bare `EventAwaited` a watcher satisfies)."""
+def resume_command(loaded: LoadedFlow, reason: Any, value: Any) -> "DeliverAnswerCommand":
+    """
+    Map a host-resumable pause reason and an answer to the engine command that delivers it.
+
+    Dispatch is on the reason's *shape*, never a static-graph lookup: the parked node may be
+    a runtime-namespaced live id (e.g. `call_sub/w`, `agent/__ask#q1`) that exists only on
+    the live engine, where the command is resolved. A reason carrying a `node_id` delivers
+    the answer as that leaf's output; a reason without one (a bare external event a watcher
+    satisfies) is not host-resumable.
+
+    Args:
+        loaded (`LoadedFlow`):
+            The compiled flow the paused run belongs to. (Reserved for symmetry and future
+            validation; the command is built from `reason` and `value`.)
+        reason (`Any`):
+            A `PauseReason` from `RunResult.pause_reasons`. Must expose a `node_id` to be
+            host-resumable.
+        value (`Any`):
+            The answer to deliver. For a `human_input` it is the typed answer; for a `wait`
+            release pass `None`.
+
+    Returns:
+        `DeliverAnswerCommand`:
+            The command to pass to
+            [`resume_flow`][agent_composer.compose.run.resume_flow] via `commands=`.
+
+    Raises:
+        `ValueError`:
+            If `reason` has no `node_id` (a bare external event that a watcher, not the
+            host, must satisfy).
+    """
     from agent_composer.suspension.commands import DeliverAnswerCommand
 
     node_id = getattr(reason, "node_id", None)

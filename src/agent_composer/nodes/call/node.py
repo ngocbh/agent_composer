@@ -19,6 +19,31 @@ from agent_composer.nodes.base import Enqueue, Node, NodeKind
 
 
 class CallNode(Node):
+    """
+    The REF driver (`kind: call`) — apply a callable flow once (`'a flow -> 'b`).
+
+    The REF half of the REF/MAP pair (the MAP half is
+    [`MapNode`][agent_composer.nodes.map.node.MapNode]). `run` returns one `Enqueue` description;
+    the engine's `_apply_enqueue` clones the baked child and grows the live graph. The spliced
+    child START owns omitted-input defaulting, so the driver passes call-args raw.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        flow_id (`str`):
+            The id of the child flow to call.
+        flow_version (`int`, *optional*, defaults to `None`):
+            A pinned child flow version, if any.
+        child (`Any`, *optional*, defaults to `None`):
+            The baked child flow (stamped at load); a `None` child raises at run time.
+        child_inputs (`list`, *optional*, defaults to `None`):
+            The child's input decls, read by compile validation and the boundary-assert temp pool.
+        child_asserts (`Any`, *optional*, defaults to `None`):
+            The child's baked boundary asserts.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.CALL
 
     def __init__(self, node_id: str, *, flow_id: str, flow_version: Optional[int] = None,

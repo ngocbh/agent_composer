@@ -83,6 +83,34 @@ NodeResult = Union[Output, Pause, Enqueue]
 
 
 class Node(ABC):
+    """
+    The base contract every node kind implements: a pure function of its input record.
+
+    A node implements [`run`][agent_composer.nodes.base.Node.run] and returns one of the
+    closed sum `Output | Pause | Enqueue` (or, for a streaming kind, a generator that yields
+    `StreamChunk` and returns a `NodeResult`). The node never receives the pool — the engine's
+    `eval_node` seam binds its inputs and hands it a record — and never writes the pool; it
+    *describes* its one output as `Output(value)` and the engine performs the write under the
+    node id. Failure is a `raise`, not a variant.
+
+    Attributes:
+        kind (`NodeKind`):
+            The closed-vocabulary tag the engine dispatches on. Set per subclass.
+        id (`str`):
+            The node's unique id within its (possibly namespaced) flow.
+        title (`str`, *optional*):
+            A human-friendly display title, or `None`.
+        output_shape (`Shape`, *optional*):
+            The declared output Shape (one value); `None` leaves the write unenforced.
+        params (`list[ParamDecl]`, *optional*):
+            The node-side declared params (no source — the flow owns the wiring); `None`
+            for a node that declares no inputs.
+        pre_asserts (`list[str]`):
+            Node-local `asserts:` checked against the bound record before `run`.
+        post_asserts (`list[str]`):
+            Node-local `asserts:` (reading `${output}`) checked after `run`.
+    """
+
     kind: ClassVar[NodeKind]
 
     def __init__(

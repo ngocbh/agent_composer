@@ -39,10 +39,24 @@ class BindingError(ValueError):
 
 @dataclass(frozen=True)
 class ParamDecl:
-    """One declared input on a node — the node-side half of the node/flow split (the flow-side half
-    is `CompiledFlow.wiring[node_id][name] -> source`). A `ParamDecl` holds NO `source`: the node
-    declares only its signature; the flow owns the wiring. `type=None` is an UNTYPED param (TOOL
-    args); `shape` is the compile-stamped resolved type."""
+    """
+    One declared input on a node — the node-side half of the node/flow split.
+
+    The node declares only its signature; the flow owns the wiring
+    (`CompiledFlow.wiring[node_id][name] -> source`), so a `ParamDecl` holds NO source.
+
+    Attributes:
+        name (`str`):
+            The input name (the key the bound record is keyed by).
+        type (`str`, *optional*, defaults to `None`):
+            The declared type name; `None` is an UNTYPED param (e.g. TOOL args).
+        required (`bool`, *optional*, defaults to `False`):
+            Whether an omitted input is an error. In practice only START params set this.
+        default (`Any`, *optional*, defaults to `None`):
+            The value filled for an OMITTED input. In practice only START params set this.
+        shape (`Shape`, *optional*, defaults to `None`):
+            The compile-stamped resolved type used to shape-check the bound value.
+    """
 
     name: str
     type: Optional[str] = None
@@ -80,11 +94,28 @@ def bind_params(
     *,
     item: Any = None,
 ) -> dict[str, Any]:
-    """Resolve each declared `ParamDecl` into a typed record, joining the param to its source
-    from the flow-owned `wiring` dict (`wiring[name] -> source`): coalesce / default / required /
-    shape-check / deep-copy / `item` scope — the engine's read boundary.
+    """Resolve each declared `ParamDecl` into a typed record — the engine's read boundary.
 
-    Raises `BindingError` on a missing-required input or a type mismatch.
+    Joins each param to its source from the flow-owned `wiring` dict (`wiring[name] -> source`):
+    coalesce / default / required / shape-check / deep-copy / `item` scope. An OMITTED input (no
+    wiring edge) fills its declared default or fails when required; a caller's explicit null
+    SHADOWS the child default (`f(x=None)` semantics).
+
+    Args:
+        params (`list[ParamDecl]`):
+            The node-side declared signature to bind.
+        wiring (`dict`):
+            The flow-owned `name -> source` map for this node.
+        pool (`TypedVariablePool`):
+            The pool each `${...}` source resolves against.
+        item (`Any`, *optional*, defaults to `None`):
+            The current element for a MAP body's `${item}` scope; `None` is the non-MAP path.
+
+    Returns:
+        `dict[str, Any]`: The bound `{name: value}` record handed to the node instead of the pool.
+
+    Raises:
+        BindingError: On a missing-required input or a type mismatch.
     """
     record: dict[str, Any] = {}
     for p in params:

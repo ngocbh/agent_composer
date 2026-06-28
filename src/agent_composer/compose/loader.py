@@ -84,12 +84,25 @@ _SINGLE_OUTPUT_NAME = "result"
 
 @dataclass(frozen=True)
 class LoadedFlow:
-    """A loaded flow: the runtime `CompiledFlow` + the flow-input decls + the asserts.
+    """
+    A compiled, validated flow ready to run.
 
-    `compiled` is what `FlowEngine` runs; `input` are the `InputDecl`s `run_flow`
-    coerces/defaults the run arguments against (singular for surface symmetry with
-    the `input:` YAML keyword); `asserts` is the boundary/post-terminal split `run_flow`
-    enforces in two phases.
+    Produced by [`load_flow`][agent_composer.load_flow] and consumed by
+    [`run_flow`][agent_composer.run_flow] / the engine. Immutable so it can be reused
+    across runs and resumes.
+
+    Attributes:
+        compiled (`CompiledFlow`):
+            The runnable IR (nodes + edges + outputs + wiring) the `FlowEngine` executes.
+        input (`list[InputDecl]`):
+            The declared flow inputs `run_flow` coerces and defaults run arguments
+            against. Singular for symmetry with the `input:` YAML keyword.
+        asserts (`AssertSet`):
+            The boundary / post-terminal assert split `run_flow` enforces in two phases
+            (boundary before any node runs, post after the flow terminates).
+        version (`str`, *optional*, defaults to `None`):
+            The flow's declared `version:`, or `None` if unversioned. Used to validate a
+            `uses: ref@<version>` pin against the resolved file.
     """
 
     compiled: CompiledFlow
@@ -159,13 +172,32 @@ def _check_version(child: "LoadedFlow", path: str, version: Optional[str]) -> No
 
 
 def make_file_resolver(search_paths, ctx: "_LoadCtx") -> ChildResolver:
-    """The default LOCAL file resolver: resolve a `uses:` ref `(path, version)` to a
-    `.yaml` on the search path (`<dir>/<path>.yaml`, first match wins) — `@<version>` is
-    NEVER part of the filename. It is a GUARD: the resolved file is loaded, then if the ref
-    carried `@<v>` its declared `version:` field must equal `<v>` (loud `LoadError` on
-    mismatch). Recursively loads so a child's own `uses:`/`system.paths` re-root at the
-    child's dir. Shares `ctx` across the whole import graph (cross-file cycle guard +
-    diamond cache). A `hub:`/scheme ref never reaches here (handled in the composite uses arm)."""
+    """
+    Build the default local file resolver for `uses:` references.
+
+    The returned `(path, version) -> LoadedFlow` callable resolves a ref to a `.yaml` on
+    the search path (`<dir>/<path>.yaml`, first match wins); `@<version>` is never part of
+    the filename but acts as a guard — the resolved file is loaded, then its declared
+    `version:` must equal the pinned `<v>`. Children load recursively so their own
+    `uses:`/`system.paths` re-root at the child's directory. A `hub:`/scheme ref never
+    reaches here (it is handled in the composite resolver).
+
+    Args:
+        search_paths (`list[str | Path]`):
+            Directories to search, in order; the first containing the target wins.
+        ctx (`_LoadCtx`):
+            Shared load context for the whole import graph — a cross-file cycle guard
+            plus a diamond-reuse cache, keyed by resolved absolute path.
+
+    Returns:
+        `ChildResolver`:
+            A `resolve(path, version=None) -> LoadedFlow` closure over `search_paths`/`ctx`.
+
+    Raises:
+        `LoadError`:
+            From the returned closure on a missing target, a cross-file reference cycle,
+            or a pinned-version mismatch.
+    """
 
     def resolve(path: str, version: Optional[str] = None) -> LoadedFlow:
         rel = path  # version is a guard on the resolved file, never part of the filename
@@ -205,20 +237,44 @@ def load_flow(
     child_resolver: Optional[ChildResolver] = None,
     search_paths: Optional[list] = None,
 ) -> LoadedFlow:
-    """Load Compose YAML text into a runnable `LoadedFlow`.
+    """
+    Load Compose YAML text into a runnable `LoadedFlow`.
 
-    Raises `LoadError` on any malformed/inconsistent flow (the surface speaks one
-    error type), located at the offending `.yaml` line where a slice supplies one.
+    Parses, compiles, and validates the flow in one pass. A `call:` resolves
+    **defs-first** (an in-file `defs:` callable), then a **`uses:` alias** (external, with
+    the ref's `@<version>`), then a legacy bare name. With neither `search_paths` nor
+    `child_resolver`, a `call:`/`uses:` to a non-def callable raises — external resolution
+    is additive. The loader derives each callable's signature for the binding checks and
+    bakes its compiled flow onto the built `CallNode` so `run` drives it.
 
-    A `call:` resolves **defs-first** (an in-file `defs:` callable), then a **`uses:`
-    alias** (external, with the ref's `@<version>`), then a legacy bare name. The external
-    resolver is either an explicit injected `child_resolver` (a fake / future marketplace),
-    or — when `search_paths` is given — the default LOCAL file resolver rooted at those
-    dirs (the file's own dir first; extended by its `system: paths:`). With **neither**
-    `search_paths` **nor** `child_resolver`, a `call:`/`uses:` to a non-def callable is loud
-    (today's behavior unchanged — external resolution is additive). The loader derives each
-    callable's signature for the binding checks and bakes its compiled flow onto the built
-    `CallNode` so `run` drives it.
+    Args:
+        text (`str`):
+            The Compose-shaped YAML source of the flow.
+        child_resolver (`ChildResolver`, *optional*, defaults to `None`):
+            An explicit `(flow_id, version) -> LoadedFlow` resolver for external flows
+            (a fake, or a future marketplace). Mutually preferred over `search_paths`
+            when both are given.
+        search_paths (`list[str | Path]`, *optional*, defaults to `None`):
+            Directories the default local file resolver searches for `uses:` targets
+            (`<dir>/<path>.yaml`). Pass the flow file's own directory so relative
+            `call:`/`uses:` references resolve; the list is extended by the flow's
+            `system: paths:`.
+
+    Returns:
+        `LoadedFlow`:
+            The compiled, validated flow ready for `run_flow`.
+
+    Raises:
+        `LoadError`:
+            On any malformed or inconsistent flow, located at the offending `.yaml`
+            line where a slice supplies one.
+
+    Example:
+        ```python
+        from agent_composer import load_flow
+
+        loaded = load_flow(open("hello.yaml").read(), search_paths=["."])
+        ```
     """
     return _load_flow(text, child_resolver, search_paths, _LoadCtx())
 

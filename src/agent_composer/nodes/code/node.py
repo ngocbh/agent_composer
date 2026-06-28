@@ -22,6 +22,25 @@ from agent_composer.nodes.base import Node, NodeKind, Output
 
 
 class CodeNode(Node):
+    """
+    Run a deterministic Python callable referenced as `"module:function"`.
+
+    The function is called with the node's bound input record (a dict) and returns the node's
+    one output value. Inline source execution is intentionally unsupported — a `module:function`
+    reference keeps CODE import-auditable.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        ref (`str`):
+            A `"module:function"` reference; a missing `:` is a loud `ValueError`.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+
+    Raises:
+        ValueError: If `ref` is not a `"module:function"` reference.
+    """
+
     kind = NodeKind.CODE
 
     def __init__(self, node_id: str, *, ref: str, title=None) -> None:

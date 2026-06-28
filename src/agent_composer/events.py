@@ -30,6 +30,8 @@ from typing import Any, Optional
 
 @dataclass
 class NodeStarted:
+    """A node began executing."""
+
     node_id: str
 
 
@@ -45,6 +47,8 @@ class StreamChunk:
 
 @dataclass
 class NodeSucceeded:
+    """A node finished and produced its single output value (the engine does the pool write)."""
+
     node_id: str
     output: Any = None  # the node's single produced value
     # IF_ELSE routing: which case handle was selected ("default" = fallback).
@@ -53,6 +57,8 @@ class NodeSucceeded:
 
 @dataclass
 class NodeFailed:
+    """A node raised; the engine boundary captured the error message and type."""
+
     node_id: str
     error: str
     error_type: str = ""
@@ -90,6 +96,8 @@ NodeStreamEvent = (StreamChunk, PauseRequested)
 
 @dataclass
 class RunStarted:
+    """The lead event of a fresh run."""
+
     pass
 
 
@@ -102,11 +110,15 @@ class RunResumed:
 
 @dataclass
 class RunSucceeded:
+    """The run reached its terminal; `output` is the flow's single committed value."""
+
     output: Any = None  # the flow's single (possibly object) terminal value
 
 
 @dataclass
 class RunFailed:
+    """The run ended on an unrecovered node failure."""
+
     error: str
     error_type: str = ""
 
@@ -120,4 +132,6 @@ class RunPaused:
 
 @dataclass
 class RunAborted:
+    """The run was aborted by an `AbortCommand` rather than completing or failing."""
+
     pass

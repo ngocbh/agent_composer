@@ -41,6 +41,37 @@ CHECKPOINT_VERSION = "5.0"
 
 
 class RunCheckpoint(BaseModel):
+    """
+    The serializable envelope that makes a paused run resumable.
+
+    The graph topology is intentionally NOT stored — it is rebuilt from the flow spec —
+    so checkpoints stay small and decoupled from code changes to node bodies. Only run
+    state is captured. A round-trip through `dumps()` / `loads()` reconstructs an
+    equivalent run in any process.
+
+    Attributes:
+        version (`str`, *optional*, defaults to `CHECKPOINT_VERSION`):
+            The blob schema version. `loads()` rejects any other version up front.
+        pool (`TypedVariablePool`):
+            The typed variable pool (lossless via the `AnySegment` tags).
+        ready (`list[str]`, *optional*, defaults to `[]`):
+            Node ids that were ready to run at suspend time; re-enqueued on resume.
+        node_state (`dict[str, NodeState]`, *optional*, defaults to `{}`):
+            Per-node scheduling state at suspend time.
+        edge_state (`dict[str, NodeState]`, *optional*, defaults to `{}`):
+            Per-edge scheduling state at suspend time.
+        paused_nodes (`list[str]`, *optional*, defaults to `[]`):
+            Parked leaves; they stay `TAKEN` and the delivered answer becomes their
+            Output on resume (no re-run).
+        deferred_nodes (`list[str]`, *optional*, defaults to `[]`):
+            Nodes that became ready while suspending; enqueued on resume.
+        pause_reasons (`list[PauseReason]`, *optional*, defaults to `[]`):
+            What each paused node awaits — drives the watcher / CLI.
+        expansions (`list[Expansion]`, *optional*, defaults to `[]`):
+            Descriptor tree for runtime-grown subgraphs, replayed top-down on restore.
+            Empty for any run that never expanded.
+    """
+
     version: str = CHECKPOINT_VERSION
 
     pool: TypedVariablePool

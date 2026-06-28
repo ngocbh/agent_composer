@@ -106,6 +106,36 @@ class NodeExecutionError(RuntimeError):
 
 
 class FlowEngine:
+    """
+    The flow execution engine: drive a `CompiledFlow` to a terminal, emitting events.
+
+    A producer/consumer engine with two drive modes behind one `num_workers` knob: the
+    default single-threaded inline drain (deterministic event order) and a worker pool
+    with a single-writer dispatcher. Both capture the same correctness (3-state edge
+    join, exact-once fan-in, outputs-before-successors, branch skip-flood). Suspended
+    runs can be captured with [`snapshot`][agent_composer.FlowEngine.snapshot] and
+    rebuilt in a fresh process with [`restore`][agent_composer.FlowEngine.restore].
+
+    Most callers should use [`run_flow`][agent_composer.run_flow] rather than driving the
+    engine directly.
+
+    Args:
+        flow (`CompiledFlow`):
+            The compiled graph to execute. The engine mutates it in place when a spawner
+            node (CALL/MAP) grows the graph at run time.
+        pool (`TypedVariablePool`, *optional*, defaults to `None`):
+            The variable pool to read/write. A fresh empty pool is created when `None`.
+        num_workers (`int`, *optional*, defaults to `0`):
+            `0` runs the deterministic inline drain on the caller's thread; `>=1` spawns
+            that many daemon workers behind a single-writer dispatcher. Clamped to `>=0`.
+        run_inputs (`dict`, *optional*, defaults to `None`):
+            The flow's run arguments, seeded into the START node once at init. `None` for
+            direct-engine tests that hand-seed the START store entry.
+        boundary_asserts (`list`, *optional*, defaults to `None`):
+            The flow's boundary asserts, fired pool-scoped right after the START seed and
+            before any body node runs.
+    """
+
     def __init__(
         self,
         flow: CompiledFlow,

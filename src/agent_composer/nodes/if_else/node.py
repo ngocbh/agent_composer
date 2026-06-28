@@ -31,6 +31,23 @@ class Case:
 
 
 class IfElseNode(Node):
+    """
+    Deterministic conditional routing — no LLM decision.
+
+    Cases are tried in order; the first whose `when:` is truthy (evaluated against the bound
+    input record) wins and its handle is returned on the result. If none match, the reserved
+    `"default"` handle is taken. The node writes no value — the engine's `_branch` does the
+    skip-flood off the chosen handle.
+
+    Args:
+        node_id (`str`):
+            The node's unique id.
+        cases (`list[Case]`):
+            The labeled branches, tried in order; each must carry a `when` expression.
+        title (`str`, *optional*, defaults to `None`):
+            Display title.
+    """
+
     kind = NodeKind.IF_ELSE
 
     def __init__(

@@ -23,7 +23,23 @@ def normalize_content(response):
 
 
 class BaseLLMClient(ABC):
-    """Abstract base class for LLM clients."""
+    """
+    Abstract base for provider-specific LLM clients.
+
+    A client wraps one provider's langchain chat model behind a uniform surface: build
+    the model with [`get_llm`][agent_composer.llm_clients.base_client.BaseLLMClient.get_llm]
+    and check the model id against the provider's known list with
+    [`validate_model`][agent_composer.llm_clients.base_client.BaseLLMClient.validate_model].
+    Subclasses implement both; the factory picks the subclass.
+
+    Args:
+        model (`str`):
+            The provider-specific model id (e.g. `"claude-sonnet-4-5"`).
+        base_url (`str`, *optional*, defaults to `None`):
+            Override the provider's API endpoint; `None` uses the provider default.
+        **kwargs:
+            Extra provider-specific arguments, stashed on `self.kwargs` for `get_llm`.
+    """
 
     def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
         self.model = model

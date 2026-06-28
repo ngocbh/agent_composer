@@ -290,10 +290,35 @@ def _evaluate(expression: str, resolve: Callable[[str], Any]) -> bool:
 
 
 def evaluate_when(expression: str, pool: TypedVariablePool) -> bool:
-    """Evaluate a `when:` expression against the pool. Raises on malformed input.
+    """
+    Evaluate a `when:` boolean expression against the variable pool.
 
-    Pool-based path — kept for manifest parse-checks + the deferred LOOP `while:` /
-    predicate-over-carried-state seam. Strict IF_ELSE uses `evaluate_when_record`.
+    Parses and folds the expression — comparisons (`==` `!=` `<` `<=` `>` `>=` `in`
+    `not in`) over `${...}` references and literals, combined with `and` / `or` / `not`
+    — to a single boolean. This is the pool-based path, kept for manifest parse-checks and
+    the deferred LOOP `while:` predicate seam; strict `IF_ELSE` uses the record-based path.
+
+    Args:
+        expression (`str`):
+            The `when:` source: one or more comparisons combined with `and`/`or`/`not`.
+            A bare reference with no comparison operator is rejected.
+        pool (`TypedVariablePool`):
+            The variable pool each `${ref}` resolves against (`node`/`system` namespaces).
+            A reference that resolves to `None` participates as a falsy value.
+
+    Returns:
+        `bool`:
+            The truth value of the expression.
+
+    Raises:
+        `ExpressionError`:
+            If the expression is malformed, references an invalid path, mixes
+            incompatible types, or does not evaluate to a boolean.
+
+    Example:
+        ```python
+        evaluate_when("${score.output} >= 0.5 and ${flag.output}", pool)
+        ```
     """
     return _evaluate(expression, lambda path: resolve_reference(path, pool))
 
