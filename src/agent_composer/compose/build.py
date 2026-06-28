@@ -117,21 +117,25 @@ def _sink_wiring(mapping: dict[str, Any]) -> dict[str, Any]:
     return dict(mapping or {})
 
 
-def _validate_llm_config(cfg: dict[str, Any] | None, node_id: str) -> dict[str, Any]:
-    """Validate a raw llm_config dict at LOAD time.
+def _validate_llm_config(
+    cfg: dict[str, Any] | None, node_id: str
+) -> tuple[dict[str, Any], bool]:
+    """Validate a raw llm_config dict at LOAD time and split off the reserved `inherit` key.
 
-    Round-trips through `LLMConfig(**cfg)` to fire `extra="forbid"`-style rejection on
-    typo'd keys (e.g. `temparature`). Returns the original dict (the engine's interior
-    carrier is dict) — only the validation matters. Raises `LoadError` (not
+    `inherit` (whole-node cascade opt-out, default True) is NOT an `LLMConfig` field, so it
+    must be popped before the `extra="forbid"` round-trip that fires on typo'd keys (e.g.
+    `temparature`). Returns `(config_without_inherit, inherit)`. Raises `LoadError` (not
     pydantic ValidationError) so the surface speaks one error type.
     """
     if not cfg:
-        return cfg or {}
+        return {}, True
+    cfg = dict(cfg)
+    inherit = bool(cfg.pop("inherit", True))
     try:
         LLMConfig(**cfg)
     except Exception as exc:
         raise LoadError(f"node {node_id!r}: llm_config: {exc}") from exc
-    return cfg
+    return cfg, inherit
 
 
 def build_leaf_node(
@@ -147,17 +151,20 @@ def build_leaf_node(
     `read_typedefs(...)` map. A MODEL node builds with no serving seam (removed as dead).
     """
     if isinstance(desc, AgentDescriptor):
+        own_cfg, inherit = _validate_llm_config(desc.llm_config, desc.id)
         try:
             node: Node = AgentNode(
                 desc.id,
                 prompt=desc.prompt or "",
                 tools=list(desc.tools),
                 controls=list(desc.controls),
-                # desc.llm_config is a plain dict; carry it through. AgentNode.llm_config
-                # stores dict[str, Any] | None; model_from_config accepts dict|LLMConfig.
-                # The extra="forbid" on LLMConfig catches typo'd keys at LOAD via
-                # _validate_llm_config below.
-                llm_config=_validate_llm_config(desc.llm_config, desc.id),
+                # desc.llm_config is a plain dict; carry it through. AgentNode keeps it as
+                # `own_llm_config` (the authored source) and `llm_config` (the effective
+                # config, baked by resolve_llm_cascade at run start). `inherit=False` opts
+                # the node out of the whole cascade. The extra="forbid" on LLMConfig caught
+                # typo'd keys at LOAD via _validate_llm_config above.
+                llm_config=own_cfg,
+                llm_inherit=inherit,
                 mode=desc.mode,
                 title=desc.node_name,
             )

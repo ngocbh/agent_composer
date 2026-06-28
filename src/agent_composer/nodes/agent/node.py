@@ -96,6 +96,12 @@ class AgentNode(Node):
             Control-tool ids (e.g. `ask_user`) that drive an engine effect.
         llm_config (`dict`, *optional*, defaults to `None`):
             Plain-dict model selection (normalized to `LLMConfig` by `model_from_config`).
+            On construction this is the node's OWN authored config; `resolve_llm_cascade`
+            later overwrites `self.llm_config` with the EFFECTIVE config (own gap-filled by
+            the flow/parent/CLI layers). The authored source is kept on `own_llm_config`.
+        llm_inherit (`bool`, *optional*, defaults to `True`):
+            Whole-node cascade opt-out. `False` (authored as `llm_config: {inherit: false}`)
+            makes the effective config the node's own dict only — no flow/parent/CLI layers.
         mode (`str`, *optional*, defaults to `"plain"`):
             The loop method; must be a registered mode.
         title (`str`, *optional*, defaults to `None`):
@@ -116,6 +122,7 @@ class AgentNode(Node):
         tools: Optional[list[str]] = None,
         controls: Optional[list[str]] = None,
         llm_config: Optional[dict[str, Any]] = None,  # plain dict, not LLMConfig
+        llm_inherit: bool = True,
         mode: str = DEFAULT_MODE,
         title: Optional[str] = None,
     ) -> None:
@@ -125,7 +132,12 @@ class AgentNode(Node):
         self.entry: AgentEntry = entry if entry is not None else Fresh(prompt=prompt or "")
         self.tools = tools or []
         self.controls = controls or []
+        # own_llm_config: the authored dict, the immutable source re-resolved each cascade
+        # pass. llm_config: the EFFECTIVE config — defaults to own until resolve_llm_cascade
+        # bakes the gap-filled result. llm_inherit: the whole-node opt-out flag.
+        self.own_llm_config: dict[str, Any] = dict(llm_config) if llm_config else {}
         self.llm_config = llm_config
+        self.llm_inherit = llm_inherit
         self.mode = mode or DEFAULT_MODE
         if self.mode not in MODES:
             raise ValueError(
