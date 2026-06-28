@@ -27,6 +27,13 @@ under "Roadmap".
 
 ## Engine
 
+- [x] ~~**Precise runtime-error source line (phase 1: node-level).** `ac run` boxed the failing
+  *node header*; now it boxes the EXACT originating line — an input binding (`as_of: ${...:?...}`),
+  a node pre/post assert expr — via a structured `SourceSpan` locator produced at the failure site,
+  carried on `NodeFailed`, and resolved by parser sub-line maps, with a kind fallback (a code node's
+  `code:` line) then the node header then a plain message.~~ -- f7f4b60
+  Phase 2 (flow-level: post/boundary asserts + input-coercion via `RunResult.locator`) follows.
+
 - [ ] **Pooled durable resume — make `resume()` drive-mode-aware + checkpoint `num_workers`.**
   `resume()` hardcodes the serial drain (`runtime/engine.py:389`); it should pick serial vs pooled
   exactly as `run()` does (spawn workers + dispatch + join), so a checkpointed run is resumable with
