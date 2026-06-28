@@ -21,7 +21,38 @@ serialized (what *is* serialized is the checkpoint, which captures pause
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Literal, Optional
+
+# --------------------------------------------------------------------------- #
+# Source location (for precise error framing)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SourceSpan:
+    """A pointer to a sub-location in a flow's YAML, for precise error framing.
+
+    Produced at the site a runtime failure originates from (binding knows the input
+    key; an assert knows its expression) and carried on `NodeFailed`/`RunFailed`; the
+    CLI resolves it to a 1-based source line via the parser's sub-line maps.
+
+    Attributes:
+        node (`str | None`):
+            The node id the failure belongs to; `None` for a flow-level location
+            (a boundary/post assert, an input declaration).
+        kind (`Literal["input", "assert", "input_decl", "field"]`):
+            Which family of sub-line to resolve against — a node input binding, an
+            assert expression, a flow input declaration, or a node field (the kind
+            fallback).
+        key (`str`):
+            The discriminator within that family — the input name, the assert
+            expression string, the input-decl name, or the field name.
+    """
+
+    node: Optional[str]
+    kind: Literal["input", "assert", "input_decl", "field"]
+    key: str
+
 
 # --------------------------------------------------------------------------- #
 # Node-level events
@@ -62,6 +93,10 @@ class NodeFailed:
     node_id: str
     error: str
     error_type: str = ""
+    # The precise YAML sub-location the failure originates from (an input binding,
+    # an assert expr); None when no sub-line is determinable (a code raise) -> the
+    # CLI falls back to the node's best sub-line / header.
+    locator: Optional[SourceSpan] = None
 
 
 @dataclass
@@ -121,6 +156,9 @@ class RunFailed:
 
     error: str
     error_type: str = ""
+    # Flow-level precise location (a boundary assert expr, a failed input decl);
+    # None when not determinable -> the CLI falls back to a plain message.
+    locator: Optional[SourceSpan] = None
 
 
 @dataclass
