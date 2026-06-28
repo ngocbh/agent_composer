@@ -107,18 +107,24 @@ def _unwrap(obj: BaseModel, shape: Shape) -> Any:
     return data["value"]
 
 
-def _supports_native_structured(llm_config: dict) -> bool:
+def _supports_native_structured(llm_config: Any) -> bool:
     """Whether the node's effective `(provider, model)` can use native structured output.
 
-    Reads `provider`/`model` off the effective `llm_config`; an unset field falls back to the
-    package env defaults (the same source `model_from_config` uses), so the gate matches the
-    model the node actually built. Delegates the decision to the capability catalog.
+    Reads `provider`/`model` off the effective config (a plain dict on the run path, or an
+    `LLMConfig` in some unit harnesses); an unset field falls back to the package env defaults
+    (the same source `model_from_config` uses), so the gate matches the model the node actually
+    built. Delegates the decision to the capability catalog.
     """
     from agent_composer._settings import default_llm_model, default_llm_provider
     from agent_composer.llm_clients.capabilities import supports_native_structured
 
-    provider = llm_config.get("provider") or default_llm_provider()
-    model = llm_config.get("model") or default_llm_model()
+    def _get(key: str) -> Any:
+        if isinstance(llm_config, dict):
+            return llm_config.get(key)
+        return getattr(llm_config, key, None)
+
+    provider = _get("provider") or default_llm_provider()
+    model = _get("model") or default_llm_model()
     return supports_native_structured(provider, model)
 
 

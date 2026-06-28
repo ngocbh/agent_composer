@@ -81,6 +81,23 @@ def agent_step(
         messages.append(reply)
         calls = getattr(reply, "tool_calls", None) or []
         if not calls:
+            # Final answer. A declared non-text `output:` forces a structured emit turn
+            # (native or prompt-injection, with capped self-correction); a bare-str/Literal
+            # shape keeps the text path. The structured value is enforced at the engine write
+            # boundary on BOTH the primary path (`pool.set(..., declared=output_shape)`) and a
+            # resumed agent's alias-filler path, so either re-entry validates it.
+            from agent_composer.nodes.agent.structured import generate_structured, shape_to_schema
+
+            if ctx.output_shape is not None and shape_to_schema(ctx.output_shape) is not None:
+                return Output(
+                    value=generate_structured(
+                        ctx.model,
+                        messages,
+                        ctx.output_shape,
+                        max_retries=ctx.retries,
+                        llm_config=ctx.llm_config,
+                    )
+                )
             return Output(value=text_of(reply))
 
         # Run all data-tool calls first so every call in the turn gets answered.
