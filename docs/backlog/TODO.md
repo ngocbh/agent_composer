@@ -124,6 +124,17 @@ generation *tries*, the boundary *enforces*, retry catches the residual.
 
 The **tool** typed-output half stays in DEFER ("Contract gaps") — same theme, separate node kind.
 
+**Follow-ups from the code review** (non-blocking; the structured path landed + the resume-drop fix
+landed at 9867b04):
+- [ ] **(low) Fallback JSON code-fence tolerance** — the prompt-injection fallback
+  (`nodes/agent/structured.py:_generate_fallback`) does a bare `json.loads` on the model's text;
+  models often wrap JSON in a ```json … ``` fence, which fails the parse and burns a retry. Strip a
+  leading/trailing code fence before `json.loads`.
+- [ ] **(low) `tool_calling` final turn double-invokes the model** — the terminal turn already called
+  the model to discover there were no tool calls, then `generate_structured` invokes it again to emit
+  the shape (`nodes/agent/modes/tool_calling.py`). One redundant call per structured final answer.
+  Reuse the terminal message or skip the discovery call when a shape is declared.
+
 ## CLI
 
 - [ ] **Describe inputs when prompting** — the flow `input:` section is `name: TYPE` (or
