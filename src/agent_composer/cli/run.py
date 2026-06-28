@@ -5,6 +5,9 @@ input still missing is prompted for interactively (required ones are starred). A
 suspends on a HUMAN_INPUT / WAIT effect is resumed interactively — each pause prompts for
 the awaited value and the run continues to a terminal. The answer's type is enforced at
 the engine boundary; an invalid one fails the run.
+
+`--provider`/`--model` feed the outermost layer of the `llm_config` cascade (fill-the-gap,
+not a hard override): they fill only the fields an agent and its enclosing flow leave unset.
 """
 
 from __future__ import annotations
@@ -108,6 +111,12 @@ def run(
         None, "--inputs", exists=True, dir_okay=False, readable=True, help="A JSON file of inputs."
     ),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress per-node progress."),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", help="Override the LLM provider for agents that set none (cascade)."
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", help="Override the LLM model for agents that set none (cascade)."
+    ),
 ) -> None:
     """Run a flow to completion and print its output."""
     text = flow.read_text()
@@ -129,7 +138,10 @@ def run(
         if not quiet and type(event).__name__ == "NodeStarted":
             err_console.print(f"[dim]  → {event.node_id}[/dim]")
 
-    result = run_flow(loaded, supplied, on_event=on_event)
+    # The CLI flags supply the OUTERMOST cascade layer (fill-the-gap), not a hard override:
+    # an agent's own llm_config and a flow-level llm_config: still win per field.
+    cli_cfg = {k: v for k, v in {"provider": provider, "model": model}.items() if v}
+    result = run_flow(loaded, supplied, on_event=on_event, llm_config=cli_cfg or None)
     if result.status == "paused":
         result = _resume_to_terminal(loaded, result, on_event)
 
