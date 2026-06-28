@@ -94,14 +94,21 @@ class CompiledFlow:
             Authoritative input wiring `wiring[node_id][param] -> source`, where source is
             a `${...}` binding string or a literal. `edges` is its derived data-flow
             projection.
+        flow_llm_config (`dict[str, Any]`):
+            The flow's authored `llm_config:` model-selection defaults (the cascade's flow
+            layer); `{}` when absent. `resolve_llm_cascade` gap-fills each agent's effective
+            config from this, the parent chain, and the CLI layer at run start.
     """
 
     def __init__(self, nodes: dict[str, Node], edges: list[Edge],
                  outputs: Optional[list[FlowOutput]] = None,
-                 wiring: Optional[dict[str, dict[str, Any]]] = None) -> None:
+                 wiring: Optional[dict[str, dict[str, Any]]] = None,
+                 flow_llm_config: Optional[dict] = None) -> None:
         self.nodes = nodes                              # node id -> Node
         self.edges = edges                              # all directed edges
         self.outputs = outputs or []                    # declared outputs; empty -> fall back to the raw terminal value
+        # The flow's authored llm_config: defaults — the cascade's flow layer; {} when absent.
+        self.flow_llm_config: dict = flow_llm_config or {}
         # Authoritative input wiring: wiring[node_id][param_name] -> source, where source is a
         # `${...}` binding string or a literal. `edges` is the derived data-flow projection of this.
         self.wiring: dict[str, dict[str, Any]] = dict(wiring or {})
@@ -140,11 +147,13 @@ class CompiledFlow:
     @classmethod
     def from_parts(cls, nodes: dict[str, Node], edges: list[Edge],
                    outputs: Optional[list[FlowOutput]] = None,
-                   wiring: Optional[dict[str, dict[str, Any]]] = None) -> "CompiledFlow":
+                   wiring: Optional[dict[str, dict[str, Any]]] = None,
+                   flow_llm_config: Optional[dict] = None) -> "CompiledFlow":
         """Build a CompiledFlow. The entry is always the synthesized START node (StartNode.ID),
         added implicitly by the loader / graph builder — never authored by the user; the engine
         seeds and advances it at run start."""
-        return cls(nodes=nodes, edges=edges, outputs=outputs, wiring=wiring)
+        return cls(nodes=nodes, edges=edges, outputs=outputs, wiring=wiring,
+                   flow_llm_config=flow_llm_config)
 
     def add_subgraph(self, nodes: dict[str, Node], edges: list[Edge],
                      wiring: dict[str, dict[str, Any]]) -> None:

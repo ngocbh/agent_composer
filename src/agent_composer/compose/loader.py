@@ -132,7 +132,7 @@ def _flow_outputs(outputs) -> list[FlowOutput]:
 # shares the file's). A single-node form (a top-level `kind:`) is deferred.
 # `asserts:` ARE allowed: the REF/MAP child seam enforces a def's two-phase asserts
 # against the child pool (boundary before the child runs, post after it terminates).
-_DEF_ALLOWED = frozenset({"inputs", "nodes", "outputs", "asserts"})
+_DEF_ALLOWED = frozenset({"inputs", "nodes", "outputs", "asserts", "llm_config"})
 
 
 def _validate_system(system: dict) -> None:
@@ -322,6 +322,7 @@ def _load_flow(text, child_resolver, search_paths, ctx: "_LoadCtx") -> LoadedFlo
         s_lines=section_lines(text),
         uses_aliases=set(f.uses),
         version=f.version,
+        flow_llm_config=f.llm_config,
     )
 
 
@@ -430,6 +431,7 @@ def _load_def(name: str, body, registry, resolver: ChildResolver) -> LoadedFlow:
             resolver=resolver,
             n_lines={},
             s_lines={},
+            flow_llm_config=body.get("llm_config") or {},
         )
     except LoadError as exc:
         # Name the def in any internal error. The line stays None (a nested def has
@@ -488,6 +490,7 @@ def _assemble(
     s_lines: dict,
     uses_aliases: set = frozenset(),
     version: Optional[str] = None,
+    flow_llm_config: Optional[dict] = None,
 ) -> LoadedFlow:
     """Assemble parsed sections into a `LoadedFlow` — the post-parse pipeline shared by
     the top-level flow and every in-file def:
@@ -649,5 +652,6 @@ def _assemble(
     reject_cycles(edges, node_ids, n_lines)
     check_if_else_handles(nodes, edges)
 
-    compiled = CompiledFlow.from_parts(nodes, edges, outputs=flow_outputs, wiring=flow_wiring)
+    compiled = CompiledFlow.from_parts(nodes, edges, outputs=flow_outputs, wiring=flow_wiring,
+                                       flow_llm_config=flow_llm_config or {})
     return LoadedFlow(compiled=compiled, input=inputs, asserts=asserts, version=version)
