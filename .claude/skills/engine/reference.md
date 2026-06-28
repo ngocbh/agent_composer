@@ -131,7 +131,9 @@ resolved to a line at the CLI boundary — never a text heuristic.
   param name, not the node); `eval_node`'s funnel fills the node id via `replace(loc,
   node=node.id)` and emits an `assert` span at each of its three node-assert yields;
   `StartNode.run` stamps an `input_decl` span on the e08 `SegmentError`; the engine's
-  seed step and `run.py` stamp `assert` spans for boundary / post-terminal asserts.
+  seed step and `run.py` stamp `assert` spans for boundary / post-terminal asserts; the
+  engine's typed write boundary stamps a `field` span (`key="output"`) on the
+  `NodeExecutionError` it raises when a node's value fails its declared `output:` Shape.
 - **Resolution:** the parser's sub-line maps (`node_input_lines`, `node_field_lines`,
   `assert_lines`, `input_decl_lines`) map a span to a 1-based line; the CLI's `_locate`
   + fallback chain (precise line → node-kind best field, e.g. a code node's `code:` →

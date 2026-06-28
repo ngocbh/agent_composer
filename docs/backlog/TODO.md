@@ -37,6 +37,10 @@ under "Roadmap".
   `asserts:` expr, and a boundary input-coercion error boxes the input's declaration — via
   `RunFailed.locator` / `RunResult.locator` (run + resume) and the `StartNode` e08 `input_decl`
   locator.~~ -- ab29d17
+- [x] ~~**Precise runtime-error source line (phase 3: code wrong-type output).** A value that fails
+  its node's declared `output:` Shape is rejected at the typed write boundary; the resulting
+  node-less `RunFailed` now carries a `field` `SourceSpan` (set on `NodeExecutionError`) so the box
+  points at the node's `output:` declaration instead of printing a plain message.~~ -- 1b63723
 
 - [ ] **Pooled durable resume — make `resume()` drive-mode-aware + checkpoint `num_workers`.**
   `resume()` hardcodes the serial drain (`runtime/engine.py:389`); it should pick serial vs pooled

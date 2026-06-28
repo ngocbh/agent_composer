@@ -186,8 +186,8 @@ A failure that happens **while the flow runs** — a node raises, a `code` node
 returns the wrong type, an `:?` required reference is missing at its use site —
 is shown the same way as a compile error: a boxed `.yaml` frame, with the message
 below. The frame points at the **precise line the failure originates from** — the
-input binding, the assert expression, the input declaration — not just the node
-header. So a runtime error reads like a compile error: you see *exactly* where in
+input binding, the assert expression, the input declaration, a node's `output:`
+declaration — not just the node header. So a runtime error reads like a compile error: you see *exactly* where in
 the flow it broke, not an engine traceback:
 
 ```console
@@ -210,8 +210,9 @@ a code node's `code:` field — and then to the node header. A failure with no n
 behind it *and* no resolvable line prints the plain `run failed: <message>` line.
 
 Failures with **no node behind them** are still boxed at their precise line: a
-false boundary/post `assert:` boxes the offending `asserts:` expression, and an
-input that can't be coerced to its declared type boxes that input's declaration.
+false boundary/post `assert:` boxes the offending `asserts:` expression, an
+input that can't be coerced to its declared type boxes that input's declaration,
+and a node whose value fails its declared `output:` Shape boxes that `output:`.
 
 ## Next
 
