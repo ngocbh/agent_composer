@@ -1,6 +1,6 @@
-# Seed gallery — Agent Compose flow syntax
+# Seed gallery — Agent Composer flow syntax
 
-These are **example flows in the `Agent Compose` contract** (the Compose-inspired,
+These are **example flows in the `Agent Composer` contract** (the Compose-inspired,
 edge-free, single-value I/O model from
 `docs/plans/2026-06-10-engine-json-io-redesign-design.md` → §0c). They load and
 run via the Compose loader (`agent_composer.load_flow` / `run_flow`); the CODE
@@ -326,7 +326,7 @@ field) routed by `case … on <field>` — the `kind: match` + payload-union des
 ## Negative gallery — `errors/`
 
 `errors/` holds flows that are **supposed to fail**, at compile **or** at runtime — they pin
-Agent Compose's **L3 "loud + located errors"** and are the loader's negative test fixtures
+Agent Composer's **L3 "loud + located errors"** and are the loader's negative test fixtures
 (`tests/engine/test_errors.py`).
 
 **The rule:** every feature here gets accompanying error fixtures in `errors/` covering its

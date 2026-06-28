@@ -1,7 +1,7 @@
 # Seed gallery — NEGATIVE examples (expected failures)
 
 These flows are **supposed to fail** — most at load/compile, some loudly at runtime. They pin
-the *error* behavior of the Compose loader + runtime — Agent Compose **L3: "failures are loud and
+the *error* behavior of the Compose loader + runtime — Agent Composer **L3: "failures are loud and
 located"** — and double as the loader's negative test fixtures
 (`tests/engine/test_errors.py`). Each file's header states the expected diagnostic **and
 whether it fails at compile or runtime**, and isolates exactly **one** failure (everything

@@ -1,6 +1,6 @@
 # agent_composer — the engine
 
-The implementation of **Agent Compose**: a from-scratch flow engine. A flow is authored 
+The implementation of **Agent Composer**: a from-scratch flow engine. A flow is authored 
 as **Docker-Compose-shaped YAML**, read by the `compose/` loader into a compiled IR,
 and executed by the engine's own scheduler — there is no compilation down to a third-party graph runtime.
 

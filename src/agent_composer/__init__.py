@@ -1,4 +1,4 @@
-"""Agent Compose — a generic runner for a *workflow of nodes*.
+"""Agent Composer — a generic runner for a *workflow of nodes*.
 
 Owns its execution runtime (a single-writer dispatcher over a fixed worker pool),
 a typed serializable variable pool, and a durable suspend/resume protocol (the

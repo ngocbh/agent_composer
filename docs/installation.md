@@ -1,6 +1,6 @@
 # Installation
 
-Agent Compose needs **Python 3.10+**.
+Agent Composer needs **Python 3.10+**.
 
 ```console
 pip install agent-composer
@@ -57,7 +57,7 @@ ac run examples/hello.yaml --input name=Ada
 
 ## Development install
 
-To work on Agent Compose itself, install it editable with the test extras:
+To work on Agent Composer itself, install it editable with the test extras:
 
 ```console
 git clone https://github.com/ngocbh/agent-composer

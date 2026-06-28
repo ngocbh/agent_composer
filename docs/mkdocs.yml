@@ -1,4 +1,4 @@
-site_name: Agent Compose
+site_name: Agent Composer
 site_description: Deterministic workflows of agents — a Docker-Compose-shaped YAML for composing LLM / code / model / tool nodes into a runnable flow.
 site_url: https://agent-composer.readthedocs.io
 repo_url: https://github.com/ngocbh/agent-composer

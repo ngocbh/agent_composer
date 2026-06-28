@@ -1,6 +1,6 @@
-# Agent Compose
+# Agent Composer
 
-**Deterministic workflows of agents.** Agent Compose is a small engine for composing
+**Deterministic workflows of agents.** Agent Composer is a small engine for composing
 LLM agents, plain Python code, ML models, and tools into a single runnable *flow*,
 described in a Docker-Compose-shaped YAML file. You decide the structure; the LLMs
 fill the leaf boxes.

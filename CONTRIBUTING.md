@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in Agent Compose. This guide covers local setup and the
+Thanks for your interest in Agent Composer. This guide covers local setup and the
 conventions we hold contributions to — most importantly, the **docstring style**.
 
 ## Development setup

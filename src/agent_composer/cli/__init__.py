@@ -14,7 +14,7 @@ from agent_composer.cli.run import run as _run
 
 app = typer.Typer(
     name="ac",
-    help="Agent Compose — run agent flows from the command line.",
+    help="Agent Composer — run agent flows from the command line.",
     add_completion=False,
     no_args_is_help=True,
 )
