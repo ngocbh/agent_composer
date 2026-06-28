@@ -47,17 +47,15 @@ under "Roadmap".
 
 - [ ] \ngoc{add options to human input so claude can compose question and also options similar to claude. claude we should have an option to let the agent to redesign or write the question/options depending on the inputs/context. Do human input node should have an option to receive context and option to ask LLM to redesign the questions/options. There are should me multiple questions as well.
 
-- [ ] **Compact mode — a single-node flow authored inline (flow *is* the node).** Let an author
+- [x] ~~**Compact mode — a single-node flow authored inline (flow *is* the node).** Let an author
   collapse the common "one flow, one node" case so they don't have to write a `nodes:` map + a
-  redundant `output: ${greet.output}` wiring step. Instead of the full form, allow the flow's
-  top-level body to carry the node's fields directly — e.g. a flow whose top level is
-  `kind: agent` / `input:` / `output:` / `prompt:` is parsed as a flow with a single implicit node
-  whose output is the flow output. The parser detects the compact shape (a node `kind:` at flow top
-  level, no `nodes:` map) and desugars it into the canonical one-node flow before compile, so the IR
-  and engine are unchanged. **Decided:** the compact form may carry an optional `id:` for the node;
-  when omitted, fall back to an implicit default id. Still open: how flow `input:` maps onto the
-  node's `input:`, and which node kinds are allowed in compact form. Update `docs/syntax.md` + the
-  `composing-agents` skill (with a compact-form template) in the same change.
+  redundant `output: ${greet.output}` wiring step. The parser detects the compact shape (a node
+  `kind:` at flow top level, no `nodes:` map) and desugars it into the canonical one-node flow before
+  compile, so the IR and engine are unchanged.~~ -- b12957d
+  Shipped: the flow `id:` names the single node; the flow `input:` is the node signature (auto-wired
+  by name, `p = ${input.p}`); the flow `output:` is the node's output type, re-exported as the flow
+  output; restricted to the value-producing leaf kinds (agent/code/model/tool/human_input).
+  Documented in `docs/syntax.md` + the `composing-agents` skill (`templates/compact.yaml`).
 
 ## LLM config — cascade + per-node opt-out + CLI override
 
