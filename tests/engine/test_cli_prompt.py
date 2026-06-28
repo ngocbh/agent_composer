@@ -22,7 +22,7 @@ from agent_composer.cli.run import (
     _render_run_error,
 )
 from agent_composer.compose.loader import load_flow
-from agent_composer.compose.run import run_flow
+from agent_composer.compose.run import RunResult, run_flow
 from agent_composer.compose.shapes import read_flow_inputs
 
 _ERRORS = Path(__file__).resolve().parents[2] / "tests" / "seeds" / "errors"
@@ -177,8 +177,9 @@ def test_run_error_kind_fallback_for_code_raise(monkeypatch):
     assert "╭" in out and "code:" in out           # boxed at the `code:` field
 
 
-def test_run_error_plain_when_no_node(monkeypatch):
-    # A false boundary assert fails before any node runs -> no node line -> plain message.
+def test_run_error_boxes_boundary_assert_line(monkeypatch):
+    # e18's boundary assert fails before any node runs; in phase 2 the RunFailed carries a
+    # flow-level assert locator -> the failure is now BOXED at the `asserts:` line (was plain).
     flow = _ERRORS / "e18-false-boundary-assert.yaml"
     text = flow.read_text()
     result = run_flow(load_flow(text, search_paths=[flow.parent]), {"window": -5})
@@ -186,5 +187,33 @@ def test_run_error_plain_when_no_node(monkeypatch):
     buf = _sink(monkeypatch)
     _render_run_error(result, flow, text)
     out = buf.getvalue()
+    assert "e18-false-boundary-assert.yaml:15" in out   # the `${input.window} > 0` line
+    assert "assert failed" in out
+
+
+def test_run_error_boxes_input_decl_line(monkeypatch):
+    # e08's `window` can't coerce to int -> input-coercion failure carries an input_decl
+    # locator -> boxed at the `window:` declaration line.
+    flow = _ERRORS / "e08-input-type-mismatch.yaml"
+    text = flow.read_text()
+    result = run_flow(load_flow(text, search_paths=[flow.parent]), {"topic": "X", "window": "soon"})
+    assert result.status == "failed"
+    buf = _sink(monkeypatch)
+    _render_run_error(result, flow, text)
+    out = buf.getvalue()
+    assert "e08-input-type-mismatch.yaml:20" in out     # the `window: int` decl line
+    assert "╭" in out
+
+
+def test_run_error_plain_when_unlocatable(monkeypatch):
+    # A failure with no NodeFailed AND no locator (e.g. a terminal-skipped run) has nowhere
+    # to point -> the plain `run <status>: <message>` line, no frame.
+    flow = _ERRORS / "e18-false-boundary-assert.yaml"
+    text = flow.read_text()
+    result = RunResult(input={}, status="failed", error="boom", locator=None, events=[])
+    buf = _sink(monkeypatch)
+    _render_run_error(result, flow, text)
+    out = buf.getvalue()
     assert "run failed:" in out
     assert "╭" not in out                          # no boxed frame
+
