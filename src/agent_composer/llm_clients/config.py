@@ -51,3 +51,18 @@ class LLMConfig(BaseModel):
     # extra="forbid" makes typo'd llm_config: keys (e.g. `temparature` instead of
     # `temperature`) loud at LOAD time, not silent.
     model_config = ConfigDict(protected_namespaces=(), extra="forbid")
+
+
+def merge_llm_config(specific: dict, base: dict) -> dict:
+    """Per-field fill-the-gap merge: `specific` wins for every key it sets; `base`
+    fills only the keys `specific` omits. Returns a fresh dict (inputs untouched).
+
+    The cascade primitive — associative, so layering composes in any grouping. A plain
+    `dict.update` is correct because authored configs never carry an explicit `None`
+    value (every `LLMConfig` field is `Optional[...] = None`, so a key is either
+    present-with-value or absent). If a future field can be authored as `null`, switch
+    to an explicit `{k: v for ... if v is not None}` filter and add a test.
+    """
+    out = dict(base)
+    out.update(specific)
+    return out
