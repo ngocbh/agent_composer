@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Any, List, Literal, Optional
 
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, create_model
 
 from agent_composer.state.segments import Shape, SegmentType
@@ -103,3 +104,43 @@ def _unwrap(obj: BaseModel, shape: Shape) -> Any:
     if seg.is_list() or seg == SegmentType.LIST_ANY:
         return data["items"]
     return data["value"]
+
+
+def generate_structured(
+    model: Any,
+    messages: list,
+    shape: Shape,
+    *,
+    max_retries: int = 2,
+    llm_config: dict | None = None,
+) -> Any:
+    """Generate a value conforming to `shape`, retrying on provider deviation up to a cap.
+
+    Derives the pydantic schema from `shape`, binds it via `with_structured_output`, and
+    invokes the model. A provider may emit output the schema rejects (bad JSON, a missing
+    field); on any `Exception` we append a corrective `HumanMessage` naming the error and
+    retry, up to `max_retries` extra attempts (so `max_retries + 1` total invocations).
+    The last error is re-raised once the cap is exhausted.
+
+    `llm_config` is the node's effective model config (provider/model). It is accepted now
+    for the capability gate added later; today only the native `with_structured_output`
+    path is taken.
+    """
+    schema = shape_to_schema(shape)
+    msgs = list(messages)
+    last_err: Optional[Exception] = None
+    for _ in range(max_retries + 1):
+        try:
+            obj = model.with_structured_output(schema).invoke(msgs)
+            return _unwrap(obj, shape)
+        except Exception as err:  # provider deviated from the schema; correct and retry
+            last_err = err
+            msgs = msgs + [
+                HumanMessage(
+                    content=(
+                        f"Your previous output was invalid: {err}. "
+                        "Respond with valid data matching the schema."
+                    )
+                )
+            ]
+    raise last_err  # type: ignore[misc]

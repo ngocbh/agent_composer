@@ -104,6 +104,10 @@ class AgentNode(Node):
             makes the effective config the node's own dict only — no flow/parent/CLI layers.
         mode (`str`, *optional*, defaults to `"plain"`):
             The loop method; must be a registered mode.
+        retries (`int`, *optional*, defaults to `2`):
+            Structured-generation self-correction cap — extra attempts after the first when
+            the node declares a non-text `output:` and the provider deviates from the schema.
+            Authorable as `retries:` on the node.
         title (`str`, *optional*, defaults to `None`):
             Display title.
 
@@ -124,6 +128,7 @@ class AgentNode(Node):
         llm_config: Optional[dict[str, Any]] = None,  # plain dict, not LLMConfig
         llm_inherit: bool = True,
         mode: str = DEFAULT_MODE,
+        retries: int = 2,
         title: Optional[str] = None,
     ) -> None:
         super().__init__(node_id, title=title)
@@ -139,6 +144,9 @@ class AgentNode(Node):
         self.llm_config = llm_config
         self.llm_inherit = llm_inherit
         self.mode = mode or DEFAULT_MODE
+        # retries: the structured-generation self-correction cap (extra attempts after the
+        # first) used when the node declares a non-text `output:`; authorable as `retries:`.
+        self.retries = retries
         if self.mode not in MODES:
             raise ValueError(
                 f"AGENT node {node_id!r}: unknown mode {self.mode!r}; known: {sorted(MODES)}"
@@ -180,6 +188,7 @@ class AgentNode(Node):
             model=self._build_model(),
             llm_config=self.llm_config,
             output_shape=self.output_shape,
+            retries=self.retries,
         )
 
     def run(self, inputs: dict) -> NodeResult:

@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent_composer.nodes.agent.modes.common import DEFAULT_SYSTEM, AgentRunContext, register_mode
 from agent_composer.nodes.agent.modes.utils import text_of
-from agent_composer.nodes.agent.structured import shape_to_schema, _unwrap
+from agent_composer.nodes.agent.structured import generate_structured, shape_to_schema
 from agent_composer.nodes.base import Output
 
 
@@ -22,6 +22,13 @@ def plain(ctx: AgentRunContext) -> Output:
     schema = shape_to_schema(ctx.output_shape) if ctx.output_shape is not None else None
     if schema is None:
         return Output(value=text_of(ctx.model.invoke(msgs)))
-    obj = ctx.model.with_structured_output(schema).invoke(msgs)
-    return Output(value=_unwrap(obj, ctx.output_shape))
+    return Output(
+        value=generate_structured(
+            ctx.model,
+            msgs,
+            ctx.output_shape,
+            max_retries=ctx.retries,
+            llm_config=ctx.llm_config,
+        )
+    )
 

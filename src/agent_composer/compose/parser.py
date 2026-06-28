@@ -217,6 +217,7 @@ class AgentDescriptor:
     controls: list[str] = field(default_factory=list)
     mode: str = "tool_calling"
     llm_config: dict[str, Any] = field(default_factory=dict)
+    retries: int = 2
     asserts: list[str] = field(default_factory=list)
     node_name: Optional[str] = None
     depends_on: list[str] = field(default_factory=list)
@@ -356,7 +357,7 @@ _KIND_SPECS: dict[str, tuple[type, frozenset, frozenset]] = {
     "agent": (
         AgentDescriptor,
         frozenset(),
-        frozenset({"inputs", "outputs", "prompt", "tools", "controls", "mode", "llm_config", "asserts"}),
+        frozenset({"inputs", "outputs", "prompt", "tools", "controls", "mode", "llm_config", "retries", "asserts"}),
     ),
     "code": (CodeDescriptor, frozenset({"code"}), frozenset({"code", "inputs", "outputs", "asserts"})),
     "model": (

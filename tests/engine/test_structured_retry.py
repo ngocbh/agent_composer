@@ -1,0 +1,40 @@
+"""`generate_structured` — self-correction retry up to a cap on provider deviation."""
+
+import pytest
+
+from agent_composer.nodes.agent.structured import generate_structured
+from agent_composer.state.segments import Shape, SegmentType
+
+
+def test_retry_on_invalid_then_succeeds():
+    shape = Shape.scalar(SegmentType.INTEGER)
+    calls = {"n": 0}
+
+    class _Flaky:
+        def with_structured_output(self, schema):
+            class _Bound:
+                def invoke(self, msgs):
+                    calls["n"] += 1
+                    if calls["n"] == 1:
+                        raise ValueError("bad json")  # provider deviation
+                    return schema.model_validate({"value": 42})
+
+            return _Bound()
+
+    out = generate_structured(_Flaky(), [], shape, max_retries=2)
+    assert out == 42 and calls["n"] == 2
+
+
+def test_retry_exhausted_raises():
+    shape = Shape.scalar(SegmentType.INTEGER)
+
+    class _Always:
+        def with_structured_output(self, schema):
+            class _Bound:
+                def invoke(self, msgs):
+                    raise ValueError("nope")
+
+            return _Bound()
+
+    with pytest.raises(Exception):
+        generate_structured(_Always(), [], shape, max_retries=2)

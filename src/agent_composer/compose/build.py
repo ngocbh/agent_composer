@@ -166,6 +166,7 @@ def build_leaf_node(
                 llm_config=own_cfg,
                 llm_inherit=inherit,
                 mode=desc.mode,
+                retries=desc.retries,
                 title=desc.node_name,
             )
         except ValueError as exc:
