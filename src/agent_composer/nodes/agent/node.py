@@ -179,6 +179,7 @@ class AgentNode(Node):
             controls=list(self.controls),
             model=self._build_model(),
             llm_config=self.llm_config,
+            output_shape=self.output_shape,
         )
 
     def run(self, inputs: dict) -> NodeResult:
