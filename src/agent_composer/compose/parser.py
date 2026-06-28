@@ -103,6 +103,10 @@ class ComposeFile(BaseModel):
     defs: dict[str, Any] = Field(default_factory=dict)
     uses: dict[str, str] = Field(default_factory=dict)
     system: dict[str, Any] = Field(default_factory=dict)
+    # Flow-level model-selection defaults (the cascade's flow layer). Optional — absent
+    # is `{}`. A child agent fills the gaps it leaves unset from this, then from the
+    # parent/CLI layers; `resolve_llm_cascade` bakes the effective dict per agent.
+    llm_config: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
