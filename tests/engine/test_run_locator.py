@@ -8,6 +8,8 @@ no node behind them, so the locator rides the `RunResult`, not a `NodeFailed`.
 from pathlib import Path
 
 from agent_composer.compose import load_flow, run_flow
+from agent_composer.compose.run import resume_flow
+from agent_composer.suspension.commands import DeliverAnswerCommand
 
 _ERRORS = Path(__file__).resolve().parents[1] / "seeds" / "errors"
 
@@ -49,4 +51,31 @@ def test_code_wrong_type_output_sets_field_locator():
     assert result.locator is not None and result.locator.kind == "field"
     assert result.locator.node == "calc"
     assert result.locator.key == "output"
+
+
+_RESUME_WRONG_TYPE = """
+id: f
+name: f
+nodes:
+  ask:
+    kind: human_input
+    prompt: "how many?"
+    output: int
+output: ${ask.output}
+"""
+
+
+def test_resume_wrong_type_answer_sets_field_locator():
+    # A delivered HUMAN_INPUT answer that fails the parked node's declared `output:` Shape is
+    # rejected at the resume write boundary. The RunFailed must still carry the `field` locator
+    # (the resume() path forwards it identically to the run()/pooled paths).
+    loaded = load_flow(_RESUME_WRONG_TYPE)
+    res = run_flow(loaded, {})
+    assert res.status == "paused"
+    bad = DeliverAnswerCommand(node_id="ask", value="not-an-int")
+    res2 = resume_flow(loaded, engine=res.engine, commands=[bad])
+    assert res2.status == "failed"
+    assert res2.locator is not None and res2.locator.kind == "field"
+    assert res2.locator.node == "ask"
+    assert res2.locator.key == "output"
 

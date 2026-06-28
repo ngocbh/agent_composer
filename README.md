@@ -1,7 +1,5 @@
 # The Agent Composer
 
-**Bridging the trust gap between humans and agents.**
-
 Hand an agent a complex task and it improvises a plan on the fly — calling tools,
 branching, looping — in whatever shape the context happens to produce. That flexibility
 is also the problem: the workflow is *opaque*. You don't see the plan the agent chose,

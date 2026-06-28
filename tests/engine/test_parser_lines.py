@@ -30,6 +30,19 @@ def test_node_field_lines_locates_kind():
     assert m["report"]["kind"] == 20    # `kind: agent` under report:19
 
 
+def test_node_field_lines_aliases_legacy_outputs():
+    # The legacy plural `outputs:` spelling is aliased to the canonical `output` key so the
+    # `field` locator (which always asks for `output`) resolves regardless of spelling.
+    text = (
+        "id: f\nname: f\nnodes:\n"
+        "  calc:\n    kind: code\n    outputs: int\n    code: m:fn\n"
+        "output: ${calc.output}\n"
+    )
+    m = node_field_lines(text)
+    assert m["calc"]["output"] == 6     # the `outputs: int` line
+    assert m["calc"]["outputs"] == 6    # original spelling still present
+
+
 def test_assert_lines_flow_level_keyed_by_node_none():
     text = (_ERRORS / "e18-false-boundary-assert.yaml").read_text()
     m = assert_lines(text)

@@ -687,8 +687,10 @@ def node_field_lines(text: str) -> dict[str, dict[str, int]]:
     """Map node id -> {field name -> 1-based source line} for each node's direct fields.
 
     The kind-fallback source: when no precise sub-line is determinable the CLI points
-    at the node's best field (e.g. `code:` for a CODE node). Best-effort: {} when
-    uncomposable.
+    at the node's best field (e.g. `code:` for a CODE node). The `field` locator also
+    resolves here (e.g. a wrong-type-output box points at `output:`); the legacy plural
+    `outputs:` spelling is aliased to `output` so the locator key stays canonical.
+    Best-effort: {} when uncomposable.
     """
     nodes = _nodes_mapping(text)
     if nodes is None:
@@ -697,11 +699,14 @@ def node_field_lines(text: str) -> dict[str, dict[str, int]]:
     for nid, body in nodes.value:
         if not (isinstance(nid, yaml.ScalarNode) and isinstance(body, yaml.MappingNode)):
             continue
-        out[nid.value] = {
+        fields = {
             fk.value: fk.start_mark.line + 1
             for fk, _ in body.value
             if isinstance(fk, yaml.ScalarNode)
         }
+        if "outputs" in fields:
+            fields.setdefault("output", fields["outputs"])
+        out[nid.value] = fields
     return out
 
 

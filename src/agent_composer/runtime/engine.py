@@ -436,7 +436,7 @@ class FlowEngine:
             yield RunAborted()
             return
         except NodeExecutionError as exc:
-            yield RunFailed(error=exc.error, error_type=exc.error_type)
+            yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator)
             return
         if self.paused:
             yield RunPaused(reasons=[reason for _, reason in self.paused])
@@ -488,7 +488,9 @@ class FlowEngine:
                 succeeded = event
             elif isinstance(event, NodeFailed):
                 self.sm.finish_executing(node_id)
-                raise NodeExecutionError(node_id, event.error, event.error_type)
+                raise NodeExecutionError(
+                    node_id, event.error, event.error_type, locator=event.locator
+                )
             elif isinstance(event, PauseRequested):
                 self._on_pause(node_id, event.reason)
                 return
@@ -524,7 +526,9 @@ class FlowEngine:
                 self._on_success(event.node_id, event)
             elif isinstance(event, NodeFailed):
                 self.sm.finish_executing(event.node_id)
-                raise NodeExecutionError(event.node_id, event.error, event.error_type)
+                raise NodeExecutionError(
+                    event.node_id, event.error, event.error_type, locator=event.locator
+                )
             elif isinstance(event, PauseRequested):
                 self._on_pause(event.node_id, event.reason)
             elif isinstance(event, NodeExpanded):
