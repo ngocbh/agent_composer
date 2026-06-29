@@ -588,3 +588,23 @@ def test_replay_does_not_promote_a_top_level_agent_segment_child(monkeypatch):
     e.expansions = []
     e._replay_expansions([top])
     assert e.expansions == [top]                               # NOT [top, inner]
+
+
+def test_snapshot_captures_num_workers():
+    from agent_composer.runtime.engine import FlowEngine
+    from tests.engine.test_engine_expansions_ledger import call_with_inner_pause
+    eng = FlowEngine(call_with_inner_pause(), num_workers=3)
+    assert eng.snapshot().num_workers == 3
+
+
+def test_restore_defaults_to_checkpointed_count_and_override():
+    """restore() rebuilds at the checkpoint's num_workers; an explicit kwarg overrides."""
+    from agent_composer.runtime.engine import FlowEngine
+    from tests.engine.test_engine_expansions_ledger import call_with_inner_pause
+    src = FlowEngine(call_with_inner_pause(), num_workers=2)
+    ckpt = src.snapshot()
+    # fresh clean flow per restore (restore mutates flow in place; replay needs a clean graph)
+    e_default = FlowEngine.restore(call_with_inner_pause(), ckpt)
+    assert e_default.num_workers == 2
+    e_override = FlowEngine.restore(call_with_inner_pause(), ckpt, num_workers=0)
+    assert e_override.num_workers == 0

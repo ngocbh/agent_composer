@@ -323,9 +323,9 @@ class FlowEngine:
         """Capture the suspended run as a serializable RunCheckpoint.
 
         Captures pool + ready + node_state + edge_state + paused_nodes +
-        deferred_nodes + pause_reasons + expansions (the ledger of descriptor
-        entries for runtime-grown REF/CALL/MAP/AGENT subgraphs, which `restore()`
-        replays top-down to re-grow the cloned subgraphs).
+        deferred_nodes + pause_reasons + num_workers + expansions (the ledger of
+        descriptor entries for runtime-grown REF/CALL/MAP/AGENT subgraphs, which
+        `restore()` replays top-down to re-grow the cloned subgraphs).
 
         Call after `run()` yields `RunPaused`. The checkpoint can be persisted
         (dumps/loads) and resumed in a FRESH process via `restore` + `resume`,
@@ -347,12 +347,18 @@ class FlowEngine:
             paused_nodes=[node_id for node_id, _ in self.paused],
             deferred_nodes=list(self.deferred),
             pause_reasons=[reason for _, reason in self.paused],
+            num_workers=self.num_workers,
             expansions=[d.model_copy(deep=True) for d in self.expansions],
         )
 
     @classmethod
-    def restore(cls, flow: CompiledFlow, checkpoint) -> "FlowEngine":
+    def restore(cls, flow: CompiledFlow, checkpoint, *, num_workers: Optional[int] = None) -> "FlowEngine":
         """Rebuild a resumable engine on `flow` from a (deserialized) checkpoint.
+
+        `num_workers=None` (default) rebuilds the engine at the checkpoint's recorded
+        drive mode; pass an int to OVERRIDE it — a run checkpointed serial can resume
+        pooled and vice-versa (workers are pure executors; correctness is
+        worker-count-independent).
 
         Order: build a serial engine on the pool → replay the expansions descriptor tree
         (re-grows flow + sm, re-derives alias/depth/_spawner_expansion) → OVERWRITE
@@ -387,7 +393,8 @@ class FlowEngine:
         # a held checkpoint stays a point-in-time value even on the READ side, so a host that
         # reuses a retained snapshot()/loads() object across resume_flow() retries is not
         # retro-mutated (resume dirties the pool; an AGENT 2nd segment appends in place).
-        engine = cls(flow, pool=checkpoint.pool.model_copy(deep=True))
+        workers = checkpoint.num_workers if num_workers is None else num_workers
+        engine = cls(flow, pool=checkpoint.pool.model_copy(deep=True), num_workers=max(0, workers))
         # Replay re-grows the live topology + sm overlay + alias/depth/_spawner_expansion and
         # rebuilds self.expansions from OUR OWN descriptor copies. schedule=False.
         engine._replay_expansions([d.model_copy(deep=True) for d in checkpoint.expansions])
