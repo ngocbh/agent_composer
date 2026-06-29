@@ -109,3 +109,32 @@ generation *tries*, the boundary *enforces*, retry catches the residual.
 - [x] ~~**Tests** — schema derivation per shape; `plain` native path; boundary-retry on a bad emit;
   prompt-injection fallback for a no-native-support provider; `tool_calling` structured final answer;
   bare-`str` still passes through untouched.~~ -- e4504ce
+
+## Open bugs / known issues
+
+- [x] ~~**Node-local post-`asserts:` on a spawner (`call`/`map`) are silently dropped.** A leaf node's
+  node-local `asserts:` reading `${output}` fire correctly (eval_node POST block), but a `call`/`map`
+  node returns an `Enqueue` and `eval_node` yields `NodeExpanded` + `return`s
+  (`runtime/eval_node.py:113`) BEFORE the post-assert block (`:122`). The spawner's value is deferred
+  to its alias filler (the child `END`), committed at `pool.set(spawner_id, event.output, ...)`
+  (`runtime/engine.py:911`), so the node's own `${output}` post-asserts never run — a false one passes
+  silently (verified). This violates "a false assert fails the run loudly." PRE-asserts (reading
+  inputs) on a spawner DO fire. **Fix:** evaluate the spawner node's post-asserts against the
+  alias-filled value at the `_apply_enqueue`/alias-commit site (where `event.output` lands), not in the
+  per-node run path. Until fixed, assert a call's output via a top-level flow `asserts:` reading
+  `${<call_id>.output...}` (those DO fire) or a downstream typed validation node.~~ -- `map` post-asserts
+  are LOAD-rejected, so this only affected `call`; fired at the `_on_success` alias-commit site, recovering
+  the call's input record from the persisted `CallExpansion.record`. -- 21dc4cc
+
+- [x] ~~**`ask_user` resume is broken for providers with dashed tool-call ids (e.g. Ollama uuids).**
+  When a `tool_calling` agent calls the `ask_user` control, the loop mints a namespaced human-input
+  leaf id `__ask#<call_id>` and an answer forward-ref `${__ask#<call_id>.output}`
+  (`nodes/agent/modes/tool_calling.py:109,121`). On resume that ref is parsed by `_PATH_RE`
+  (`expr/template.py:45` = `^[A-Za-z_][A-Za-z0-9_#/]*...`), which allows `_ # /` but **not `-`**.
+  Ollama's `call_id` is a uuid (`adebc542-e4a3-...`), so resume fails with `malformed reference path`.
+  Anthropic/OpenAI ids (`toolu_…`/`call_…`, no dashes) happen to pass. **Fix:** sanitize the call_id
+  to a path-safe slug when forming `hi_id`/the answer ref (keep the real id only in the pending
+  `call_id`/`slot` for the `ToolMessage` match), and add a test using a dashed/uuid call_id. (The
+  HUMAN_INPUT node path is unaffected.)~~ -- `_slug_call_id` maps every non-`[A-Za-z0-9_]` char to `_`
+  for the `hi_id`/answer ref; the real id stays verbatim in `pending["call_id"]`/`slot` for the
+  ToolMessage + resume-id match. -- f07c78a

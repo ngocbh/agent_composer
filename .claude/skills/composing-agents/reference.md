@@ -123,6 +123,11 @@ Reference its object fields downstream as `${node.output.field}`.
   the search path). `alias@v1` adds a version guard.
 - **MODEL nodes aren't wired** — `kind: model` parses but running one raises. Use
   `code` for deterministic compute.
+- **Node-local `asserts:` reading `${output}` are POST checks** — they fire once the
+  node's value is committed, and fail the run loudly on a false/raising expr. This
+  includes a `call` node: its POST asserts may read `${output}` **and** the call's
+  declared inputs (`${name}`), like a leaf node. `map` nodes reject node-local
+  `asserts:` at load time — assert a `map`'s result with a flow-level/downstream check.
 
 ## Model selection — the `llm_config` cascade
 

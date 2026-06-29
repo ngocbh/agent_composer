@@ -364,6 +364,27 @@ asserts:
   - ${synth.output} in ["go", "no_go", "needs_more_info"]
 ```
 
+A node may also carry its own `asserts:`. A node-local assert is **PRE** if it
+reads only the node's inputs (checked before the node runs) and **POST** if it
+reads `${output}` (checked once the node's value is committed). Both fail the run
+loudly, exactly like a flow-level assert.
+
+```yaml
+nodes:
+  classify:
+    kind: agent
+    prompt: ...
+    output: str
+    asserts:
+      - ${output} in ["go", "no_go"]   # POST — reads the node's own output
+```
+
+This holds for a `call` node too: its POST `asserts:` fire when the call's value
+is committed, and may read `${output}` **and** the call's declared inputs
+(`${name}`), matching leaf-node semantics. (`map` nodes still reject node-local
+`asserts:` at load time — assert a `map`'s result with a flow-level or downstream
+check instead.)
+
 ## Next
 
 - [Examples](examples.md) — these constructs in working flows.
