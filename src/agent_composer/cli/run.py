@@ -348,6 +348,77 @@ def _prompt_missing(decls: List[Any], have: Dict[str, Any]) -> Optional[Dict[str
     return gathered
 
 
+# sentinel choice appended to every question's option list — selecting it routes to a
+# free-text prompt so the human can answer outside the offered labels.
+_OTHER = "Other"
+
+
+def assemble_question_answers(questions, ask):
+    """Build a human_input answer record from a question list + an `ask` callable.
+
+    `questions` is the pause's question list (each a dict {question, header, options,
+    multi_select}). `ask(question) -> answer` is the per-question elicitation (the real
+    one wraps questionary; tests pass a scripted callable). Returns a record keyed by
+    each question's `header`: a single label `str` for a single-select question, a
+    `list[str]` for a `multi_select` question (the `ask` callable returns whichever shape).
+    """
+    record = {}
+    for q in questions:
+        record[q["header"]] = ask(q)
+    return record
+
+
+def _ask_question(question):
+    """Elicit one question via questionary; return its answer (str, list[str], or None).
+
+    Decorated choices ("label — description") are rendered for display but mapped back to
+    the bare `label` so the returned value is always the bare label, never the hint string.
+    An "Other" escape is always offered; choosing it routes to a free-text prompt. Returns
+    `None` on cancel (questionary `.ask()` yields None on Ctrl-C/Esc), which the caller
+    treats like the legacy path — stay paused."""
+    import questionary
+
+    text = question["question"]
+    options = question.get("options") or []
+
+    # free-text-only question: no choices, just elicit a string.
+    if not options:
+        return questionary.text(text).ask()
+
+    # map each displayed choice back to its bare label so the return value is the label.
+    display_to_label = {}
+    choices = []
+    for opt in options:
+        label = opt["label"]
+        desc = opt.get("description") or ""
+        display = f"{label} — {desc}" if desc else label
+        display_to_label[display] = label
+        choices.append(display)
+    choices.append(_OTHER)
+
+    if question.get("multi_select"):
+        picked = questionary.checkbox(text, choices=choices).ask()
+        if picked is None:  # cancelled
+            return None
+        labels = []
+        for chosen in picked:
+            if chosen == _OTHER:
+                other = questionary.text("Other:").ask()
+                if other is None:
+                    return None
+                labels.append(other)
+            else:
+                labels.append(display_to_label[chosen])
+        return labels
+
+    chosen = questionary.select(text, choices=choices).ask()
+    if chosen is None:  # cancelled
+        return None
+    if chosen == _OTHER:
+        return questionary.text("Other:").ask()
+    return display_to_label[chosen]
+
+
 def _resume_to_terminal(
     loaded: Any, result: RunResult, reporter: _ProgressReporter, on_event: Any
 ) -> RunResult:
@@ -367,11 +438,20 @@ def _resume_to_terminal(
         answered: List[Tuple[Any, Any]] = []
         for reason in result.pause_reasons:
             if reason.type == "human_input_required":
-                label = reason.prompt or f"input for {reason.node_id}"
-                answer = questionary.text(label).ask()
-                if answer is None:
-                    return result  # cancelled — stay paused
-                answered.append((reason, answer))
+                if reason.questions:
+                    if reason.prompt:
+                        err_console.print(reason.prompt)
+                    # questions form: render each, assemble a {header: answer} record.
+                    record = assemble_question_answers(reason.questions, _ask_question)
+                    if any(v is None for v in record.values()):
+                        return result  # cancelled — stay paused
+                    answered.append((reason, record))
+                else:
+                    label = reason.prompt or f"input for {reason.node_id}"
+                    answer = questionary.text(label).ask()
+                    if answer is None:
+                        return result  # cancelled — stay paused
+                    answered.append((reason, answer))
             elif reason.type == "scheduled_pause":
                 if not questionary.confirm(
                     f"{reason.node_id}: release the wait now?", default=True
