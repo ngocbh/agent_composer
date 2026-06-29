@@ -213,23 +213,28 @@ class FlowEngine:
         if failure is not None:
             yield failure
             return
+        yield from self._drive_to_terminal()
+
+    def _drive_to_terminal(self):
+        """Drive an ALREADY-SEEDED ready frontier to a terminal, yielding every event
+        incl. the terminal one. Picks serial vs pooled on `self.num_workers` — the SOLE
+        drive block, shared by run() (after START seed) and resume() (after the resume
+        seed). Both modes capture the same correctness; pooled reorders events but the
+        result is worker-count-independent."""
         if self.num_workers == 0:
             try:
                 yield from self._drain()
             except _Aborted:
-                yield RunAborted()
-                return
+                yield RunAborted(); return
             except NodeExecutionError as exc:
-                yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator)
-                return
-
+                yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator); return
             if self.paused:
-                yield RunPaused(reasons=[reason for _, reason in self.paused])
-                return
-            yield self._terminal_event()
-            return
+                yield RunPaused(reasons=[reason for _, reason in self.paused]); return
+            yield self._terminal_event(); return
 
-        # Pooled path (num_workers>=1): N daemon workers + single-writer dispatcher.
+        # Pooled: N daemon workers + single-writer dispatcher. Clear _stop first — a prior
+        # run()/resume() pooled pass set it in its finally; a fresh pass must re-enable workers.
+        self._stop.clear()
         workers = [
             threading.Thread(target=self._worker, name=f"ac-worker-{i}", daemon=True)
             for i in range(self.num_workers)

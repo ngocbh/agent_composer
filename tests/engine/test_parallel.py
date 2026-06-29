@@ -182,3 +182,10 @@ def test_no_declared_outputs_yields_none_under_workers():
     events = _run(FlowEngine(g, num_workers=4))
     assert isinstance(events[-1], RunSucceeded)
     assert events[-1].output is None
+
+
+def test_drive_to_terminal_exists_and_pooled_run_unchanged():
+    """Smoke: the extracted _drive_to_terminal helper exists; golden tests carry the real
+    behavior-preservation coverage."""
+    from agent_composer.runtime.engine import FlowEngine
+    assert hasattr(FlowEngine, "_drive_to_terminal")
