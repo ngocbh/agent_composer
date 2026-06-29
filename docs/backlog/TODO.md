@@ -42,13 +42,13 @@ under "Roadmap".
   node-less `RunFailed` now carries a `field` `SourceSpan` (set on `NodeExecutionError`) so the box
   points at the node's `output:` declaration instead of printing a plain message.~~ -- 1b63723
 
-- [ ] **Pooled durable resume — make `resume()` drive-mode-aware + checkpoint `num_workers`.**
+- [x] ~~**Pooled durable resume — make `resume()` drive-mode-aware + checkpoint `num_workers`.**
   `resume()` hardcodes the serial drain (`runtime/engine.py:389`); it should pick serial vs pooled
   exactly as `run()` does (spawn workers + dispatch + join), so a checkpointed run is resumable with
   ANY worker count. Sound because workers are pure executors and the single-writer dispatcher owns all
   mutation — correctness is worker-count-independent. **Persist `num_workers` in `RunCheckpoint`**
   (snapshot captures `engine.num_workers`); `restore()` defaults to the checkpointed count, but
-  `restore(flow, ckpt, num_workers=N)` **overrides** it.
+  `restore(flow, ckpt, num_workers=N)` **overrides** it.~~ -- 6a2fe36
 
 - [ ] **(low) `pause_reasons = paused[0].reasons` collapses a simultaneous multi-node pause** — only
   the first paused node's reasons surface. Rare (needs two nodes pausing in one step). Fix when a real
