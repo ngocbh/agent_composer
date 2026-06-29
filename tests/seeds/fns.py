@@ -86,3 +86,9 @@ def questions_seed(inputs: Dict[str, Any]) -> List[Dict[str, Any]]:
     """`{seed}` -> a one-element `list[object]` of question records (a gate's `questions:` ref)."""
     return [{"question": inputs["seed"], "header": "H",
              "options": [{"label": "A"}, {"label": "B"}]}]
+
+
+# --- seed 26 (human-questions) — route on the keyed answer record ----------- #
+def chosen_framework(inputs: Dict[str, Any]) -> str:
+    """`{ans: {Framework, Notes}}` -> the chosen framework label (routes on the answer)."""
+    return str(inputs["ans"]["Framework"])
