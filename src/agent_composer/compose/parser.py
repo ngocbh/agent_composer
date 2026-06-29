@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agent_composer.compose.errors import LoadError
 from agent_composer.compile.model import END_ID, START_ID
+from agent_composer.state.segments import Shape
 
 _STRICT = ConfigDict(extra="forbid")
 
@@ -299,6 +300,11 @@ class AgentDescriptor:
     node_name: Optional[str] = None
     depends_on: list[str] = field(default_factory=list)
     runs_after: list[str] = field(default_factory=list)
+    # INTERNAL — never parsed from YAML (not in `_KIND_SPECS`), set only by the
+    # adaptive_questions desugar pass. When present it overrides the type-string
+    # derived `output_shape` for a synthesized structured agent whose codomain is
+    # a code-built Shape (e.g. `question_list_shape()`) with no surface type-string.
+    output_shape_override: Optional[Shape] = None
 
 
 @dataclass(frozen=True)

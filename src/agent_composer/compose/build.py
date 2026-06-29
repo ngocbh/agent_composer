@@ -238,7 +238,10 @@ def build_leaf_node(
         node.params = []
         wiring = {"until": desc.until} if desc.until is not None else {}
     else:
-        node.output_shape = _output_shape(desc.outputs, registry)
+        # A code-built override (set by the adaptive_questions desugar on the
+        # synthesized agent) wins; getattr keeps non-agent descriptors safe.
+        override = getattr(desc, "output_shape_override", None)
+        node.output_shape = override if override is not None else _output_shape(desc.outputs, registry)
         node.params = _sink_params(desc.inputs)
         wiring = _sink_wiring(desc.inputs)
         if isinstance(node, HumanInputNode):
