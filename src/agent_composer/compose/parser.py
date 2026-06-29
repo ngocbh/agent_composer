@@ -391,10 +391,21 @@ class CallDescriptor:
 
 @dataclass(frozen=True)
 class HumanInputDescriptor:
-    """kind=human_input — suspend for a person; the typed answer is the node's output."""
+    """kind=human_input — suspend for a person; the typed answer is the node's output.
+
+    Three author surfaces, exactly one of which carries the question(s):
+    - `questions`: static list (`[{question, header, options, multi_select}, ...]`) OR
+      a `${...}` ref string to a declared input (the manual-ref form);
+    - `adaptive_questions`: a nested block (dict) `{prompt: <LLM brief>, mode?,
+      llm_config?, retries?}` — the engine asks an LLM to author the questions;
+    - `prompt`: the legacy free-text approve/answer surface.
+    Legality (exactly-one, adaptive needs its own `prompt:`) is enforced in `_parse_node`.
+    """
 
     id: str
-    prompt: str
+    prompt: Optional[str] = None
+    questions: Any = None
+    adaptive_questions: Optional[dict] = None
     inputs: dict[str, Any] = field(default_factory=dict)
     outputs: Any = None
     asserts: list[str] = field(default_factory=list)
@@ -456,10 +467,12 @@ _KIND_SPECS: dict[str, tuple[type, frozenset, frozenset]] = {
         frozenset({"call", "over"}),
         frozenset({"call", "inputs", "over", "parallel", "asserts"}),
     ),
+    # `adaptive_questions:` is a nested block; its inner keys (prompt/mode/llm_config/
+    # retries) live INSIDE the block, so they need no top-level allow-list entry.
     "human_input": (
         HumanInputDescriptor,
-        frozenset({"prompt"}),
-        frozenset({"prompt", "inputs", "outputs", "asserts"}),
+        frozenset(),
+        frozenset({"prompt", "questions", "adaptive_questions", "inputs", "outputs", "asserts"}),
     ),
     "wait": (WaitDescriptor, frozenset({"until"}), frozenset({"until"})),
 }
@@ -546,6 +559,31 @@ def _parse_node(node_id: str, body: Any, line: Optional[int]) -> NodeDescriptor:
                 f"node {node_id!r} (kind={kind}): missing required field {key!r}",
                 line=line,
             )
+    # human_input legality: exactly one question surface, and an adaptive block needs
+    # its own `prompt:` (the LLM brief). `required` is empty for this kind because the
+    # choice is one-of-three, not a single mandatory field.
+    if kind == "human_input":
+        has_q = body.get("questions") is not None
+        auto = body.get("adaptive_questions")
+        if body.get("prompt") is None and not has_q and auto is None:
+            raise LoadError(
+                f"node {node_id!r} (kind=human_input): needs `prompt:`, "
+                f"`questions:`, or `adaptive_questions:`",
+                line=line,
+            )
+        if has_q and auto is not None:
+            raise LoadError(
+                f"node {node_id!r} (kind=human_input): `questions:` and "
+                f"`adaptive_questions:` are mutually exclusive",
+                line=line,
+            )
+        if auto is not None:
+            if not isinstance(auto, dict) or not auto.get("prompt"):
+                raise LoadError(
+                    f"node {node_id!r} (kind=human_input): `adaptive_questions:` "
+                    f"requires a `prompt:` (the LLM brief)",
+                    line=line,
+                )
     # `asserts:` is a list of boolean-expression strings (the generic field-copy below does
     # no type-check, unlike the Pydantic-validated top-level `asserts`).
     asserts = body.get("asserts")
