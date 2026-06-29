@@ -73,6 +73,7 @@ from agent_composer.compose.shapes import InputDecl, read_flow_inputs
 from agent_composer.compose.validate import (
     check_if_else_handles,
     reject_cycles,
+    validate_human_questions,
     validate_node_asserts,
     validate_references,
 )
@@ -655,6 +656,9 @@ def _assemble(
         node_lines=n_lines,
         outputs_line=s_lines.get("output") or s_lines.get("outputs"),
     )
+    # human_input gates: structurally check a literal `questions:` list at load, and
+    # pin a ref-form `questions: ${name}` to a declared input (the prompt-scope rule).
+    validate_human_questions(nodes, node_lines=n_lines)
     # Node-local `asserts:` (per-node contract): validate node-locally + classify pre/post +
     # stamp onto each built leaf/call node. Shared by defs (a def's internal nodes too).
     validate_node_asserts(leaf, descriptors, n_lines)
