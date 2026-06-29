@@ -1,0 +1,25 @@
+# e25 — a CODE callable that raises INSIDE an EXTERNAL `uses:` flow (a different .yaml).
+#
+# RUNTIME: the inner `kaboom` node (in lib_boom.yaml) fails with a runtime-namespaced id
+# (`go/kaboom`). The CLI call-traceback must descend across the file boundary: frame 0 the
+# top-level `go:` call node in THIS file, frame 1 the failing `kaboom` node boxed in
+# lib_boom.yaml (the frame label is that external filename, not this one). CODE-only -> no model.
+#
+# Run it with the file resolver pointed at this dir:
+#   load_flow(text, search_paths=[<errors dir>]); run_flow(loaded, {...})
+id: err-external-raise
+name: err_external_raise
+input:
+  topic: str
+
+uses:
+  boom: lib_boom                # external flow on the search path (this dir)
+
+nodes:
+  go:
+    kind: call
+    call: boom
+    input:
+      topic: ${input.topic}
+
+output: ${go.output}

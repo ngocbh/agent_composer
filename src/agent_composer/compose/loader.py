@@ -31,9 +31,9 @@ Imports flow DOWN only: this module composes the compose package's own slices pl
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from agent_composer.compile.model import CompiledFlow, Edge, FlowOutput
 from agent_composer.nodes.base import Node
@@ -64,6 +64,9 @@ from agent_composer.compose.uses import parse_uses_ref
 from agent_composer.compose.parser import (
     CallDescriptor,
     CaseDescriptor,
+    def_node_field_lines,
+    def_node_lines,
+    node_field_lines,
     node_lines,
     parse_nodes,
     parse_file,
@@ -82,6 +85,44 @@ from agent_composer.compose.validate import (
 # `FlowOutput`, `terminal_output` returns the bare resolved value, so the name
 # only labels the carrier.
 _SINGLE_OUTPUT_NAME = "result"
+
+
+@dataclass(frozen=True)
+class SourceFrame:
+    """Render-only source-location metadata for one flow (a def or an external file).
+
+    Carried on a `LoadedFlow` and copied onto the built `CallNode`/`MapNode` so the CLI
+    can box a `.yaml` frame for the *child* a call descends into — the basis of the
+    nested-error call traceback. Never read by the engine's `run()`; purely for error
+    rendering.
+
+    Attributes:
+        label (`str`):
+            The frame title — `"defs:<name>"` for an in-file callable, or the resolved
+            filename (e.g. `"24-uses-external.yaml"`) for an external `uses:` flow.
+        text (`str`):
+            The YAML source whose lines the maps below index. For a def this is the
+            **parent** file's text (the def's nodes live at absolute lines there); for an
+            external flow it is that file's own text.
+        node_lines (`dict[str, int]`):
+            `node_id -> 1-based line in `text`` for the child's nodes. Empty (frame
+            collapses to the call line) for a compact single-node def with no authored
+            inner `nodes:` mapping.
+        field_lines (`dict[str, dict[str, int]]`):
+            `node_id -> {field -> 1-based line}` — the kind-fallback / `output:` precision
+            used when the failing locator is `kind=field`.
+    """
+
+    label: str
+    text: str
+    node_lines: dict[str, int]
+    field_lines: dict[str, dict[str, int]]
+
+    def __deepcopy__(self, memo):
+        # Frozen + render-only: every per-callsite `clone_child` deep-copies each child
+        # node, which would otherwise copy the full YAML `text` per clone. Sharing the one
+        # frozen instance is safe (it is never mutated) and avoids O(elements x filesize).
+        return self
 
 
 @dataclass(frozen=True)
@@ -111,6 +152,12 @@ class LoadedFlow:
         description (`str`, *optional*, defaults to `None`):
             The flow's declared `description:`, or `None` if absent — human-facing
             metadata (e.g. the CLI's interactive-prompt header).
+        source (`SourceFrame`, *optional*, defaults to `None`):
+            Render-only source-location metadata for THIS flow (its own text + node-line
+            maps). Set for the top-level flow, each `defs:` callable, and each external
+            `uses:` file; copied onto the built `CallNode`/`MapNode` as `child_source` so
+            the CLI can box a frame for the child a call descends into. `None` only when a
+            flow was assembled without a known source (defensive).
     """
 
     compiled: CompiledFlow
@@ -119,6 +166,7 @@ class LoadedFlow:
     version: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
+    source: Optional[SourceFrame] = None
 
 
 def _flow_outputs(outputs) -> list[FlowOutput]:
@@ -230,6 +278,11 @@ def make_file_resolver(search_paths, ctx: "_LoadCtx") -> ChildResolver:
                 child = _load_flow(cand.read_text(), None, [cand.parent], ctx)
             finally:
                 ctx.loading.discard(cand)
+            # Relabel the external child's frame to its filename BEFORE caching, so every
+            # diamond-reuse cache-hit also returns the filename label (not the file's own
+            # `name:`). The label is value-stable across sites (same abs-path -> same name).
+            if child.source is not None:
+                child = replace(child, source=replace(child.source, label=cand.name))
             ctx.cache[cand] = child
             _check_version(child, path, version)
             return child
@@ -322,8 +375,19 @@ def _load_flow(text, child_resolver, search_paths, ctx: "_LoadCtx") -> LoadedFlo
 
     # The composite call resolver: defs-first, then a `uses:` alias (external, with the
     # ref's version), then a legacy bare name. Building the defs eagerly surfaces a
-    # broken/recursive callable at load (loud, not a hang).
-    resolver = _make_call_resolver(f.defs, registry, external, f.uses)
+    # broken/recursive callable at load (loud, not a hang). `text` is threaded so each
+    # def's `SourceFrame` indexes its inner nodes at their absolute lines in THIS file.
+    resolver = _make_call_resolver(f.defs, registry, external, f.uses, text)
+
+    # Render-only source frame for THIS flow: copied onto child call/map nodes for the
+    # nested-error traceback. For an external file (loaded via make_file_resolver) the
+    # label is relabeled to the filename in `resolve`.
+    source = SourceFrame(
+        label=f.name or "<flow>",
+        text=text,
+        node_lines=node_lines(text),
+        field_lines=node_field_lines(text),
+    )
 
     return _assemble(
         inputs_section=f.inputs,
@@ -339,11 +403,13 @@ def _load_flow(text, child_resolver, search_paths, ctx: "_LoadCtx") -> LoadedFlo
         name=f.name,
         description=f.description,
         flow_llm_config=f.llm_config,
+        source=source,
     )
 
 
 def _make_call_resolver(
-    defs_section: dict, registry, external: Optional[ChildResolver], uses: dict
+    defs_section: dict, registry, external: Optional[ChildResolver], uses: dict,
+    parent_text: str = "",
 ) -> ChildResolver:
     """A `(flow_id, version) -> LoadedFlow` resolver: **defs-first** (in-file `defs:`)
     → **`uses:` alias** (external, with the ref's `@<version>`). A bare `call:` that is
@@ -353,6 +419,10 @@ def _make_call_resolver(
     `defs:` references (-> `LoadError`, never a load hang). Every def is built eagerly so a
     broken/unused one is still loud at load (eager `uses:` resolution is in `_assemble`,
     after the node-id collision guard).
+
+    `parent_text` is the source of the file declaring these `defs:` — threaded into each
+    `_load_def` so a def's `SourceFrame` indexes its inner nodes at their absolute lines
+    in that file (the nested-error traceback).
 
     `uses:` translates an alias to its `UsesRef`: a `hub:` scheme is the (deferred)
     marketplace, any other scheme is unknown, and a local ref is handed to `external` as
@@ -377,7 +447,7 @@ def _make_call_resolver(
                 )
             in_progress.add(flow_id)
             try:
-                loaded = _load_def(flow_id, defs_section[flow_id], registry, resolve)
+                loaded = _load_def(flow_id, defs_section[flow_id], registry, resolve, parent_text)
             finally:
                 in_progress.discard(flow_id)
             built[flow_id] = loaded
@@ -412,21 +482,22 @@ def _make_call_resolver(
     return resolve
 
 
-def _load_def(name: str, body, registry, resolver: ChildResolver) -> LoadedFlow:
+def _load_def(name: str, body, registry, resolver: ChildResolver, parent_text: str = "") -> LoadedFlow:
     """Build one in-file `defs:` entry into a `LoadedFlow` (a callable / sub-flow inline).
 
     Supports the **multi-node** form only — `{inputs?, nodes, outputs?, asserts?}`,
     sharing the file's `typedefs:` registry + the composite resolver (so a def can call
     other defs / external flows). A **single-node** form (a top-level `kind:`) is deferred
-    -> `LoadError`. Def-internal errors are unlocated (a nested def has no isolated source
-    text) — a best-effort limitation."""
+    -> `LoadError`. `parent_text` is the source of the declaring file: the def's nodes
+    live at absolute lines there, so its `SourceFrame` indexes them via
+    `def_node_lines(parent_text)[name]` for the nested-error traceback."""
     if not isinstance(body, dict):
         raise LoadError(
             f"defs entry {name!r}: body must be a mapping, got {type(body).__name__}"
         )
     if "nodes" not in body:
         if "kind" in body:
-            return _load_single_node_def(name, body, registry, resolver)
+            return _load_single_node_def(name, body, registry, resolver, parent_text)
         raise LoadError(
             f"defs entry {name!r}: a callable needs a `nodes:` sub-flow body "
             f"(inputs?/nodes/outputs?) OR a single-node `kind:` form (G)"
@@ -437,6 +508,13 @@ def _load_def(name: str, body, registry, resolver: ChildResolver) -> LoadedFlow:
             f"defs entry {name!r}: unknown field(s) {extra} "
             f"(allowed: {', '.join(sorted(_DEF_ALLOWED))})"
         )
+    # The def's frame indexes its inner nodes at their absolute lines in the parent file.
+    source = SourceFrame(
+        label="defs:" + name,
+        text=parent_text,
+        node_lines=def_node_lines(parent_text).get(name, {}),
+        field_lines=def_node_field_lines(parent_text).get(name, {}),
+    )
     try:
         return _assemble(
             inputs_section=body.get("inputs") or {},
@@ -448,6 +526,7 @@ def _load_def(name: str, body, registry, resolver: ChildResolver) -> LoadedFlow:
             n_lines={},
             s_lines={},
             flow_llm_config=body.get("llm_config") or {},
+            source=source,
         )
     except LoadError as exc:
         # Name the def in any internal error. The line stays None (a nested def has
@@ -458,7 +537,7 @@ def _load_def(name: str, body, registry, resolver: ChildResolver) -> LoadedFlow:
         raise LoadError(f"defs entry {name!r}: {exc}", line=exc.line) from exc
 
 
-def _load_single_node_def(name: str, body: dict, registry, resolver: ChildResolver) -> LoadedFlow:
+def _load_single_node_def(name: str, body: dict, registry, resolver: ChildResolver, parent_text: str = "") -> LoadedFlow:
     """Build a SINGLE-node `defs:` callable — `let f params = <one node over params>`.
 
     The flat body is `{kind, <logic fields>, input?, output?}` (singular keys; the
@@ -467,7 +546,9 @@ def _load_single_node_def(name: str, body: dict, registry, resolver: ChildResolv
     each auto-bound by name into the single node (`p = ${input.p}`); `output:` is the
     node's output TYPE (the codomain). Everything except `input:`/`output:` is the node
     body (kind + its logic fields + any node-local `asserts:`). It desugars to a one-node
-    sub-flow and runs through the same `_assemble` as the multi-node form."""
+    sub-flow and runs through the same `_assemble` as the multi-node form. Its sole node is
+    synthesized in-memory (no authored inner `nodes:` mapping), so its `SourceFrame` maps
+    are empty and the traceback frame collapses to the call line."""
     param_types = body.get("inputs") or {}
     if not isinstance(param_types, dict):
         raise LoadError(
@@ -477,6 +558,7 @@ def _load_single_node_def(name: str, body: dict, registry, resolver: ChildResolv
     node_body["inputs"] = {p: f"${{input.{p}}}" for p in param_types}  # auto-wire by name
     if "outputs" in body:
         node_body["outputs"] = body["outputs"]  # the node's output type = the def codomain
+    source = SourceFrame(label="defs:" + name, text=parent_text, node_lines={}, field_lines={})
     try:
         return _assemble(
             inputs_section=param_types,
@@ -487,6 +569,7 @@ def _load_single_node_def(name: str, body: dict, registry, resolver: ChildResolv
             resolver=resolver,
             n_lines={},
             s_lines={},
+            source=source,
         )
     except LoadError as exc:
         if str(exc).startswith("defs entry "):
@@ -509,6 +592,7 @@ def _assemble(
     name: Optional[str] = None,
     description: Optional[str] = None,
     flow_llm_config: Optional[dict] = None,
+    source: Optional[SourceFrame] = None,
 ) -> LoadedFlow:
     """Assemble parsed sections into a `LoadedFlow` — the post-parse pipeline shared by
     the top-level flow and every in-file def:
@@ -693,5 +777,5 @@ def _assemble(
                                        flow_llm_config=flow_llm_config or {})
     return LoadedFlow(
         compiled=compiled, input=inputs, asserts=asserts,
-        version=version, name=name, description=description,
+        version=version, name=name, description=description, source=source,
     )

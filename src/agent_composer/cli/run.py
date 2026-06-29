@@ -12,6 +12,7 @@ not a hard override): they fill only the fields an agent and its enclosing flow 
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,7 @@ import typer
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.text import Text
@@ -72,19 +74,17 @@ def _locate(span: Optional[SourceSpan], text: str) -> Optional[int]:
     return None
 
 
-def _render_source_frame(text: str, marks, title: str, message: str) -> None:
-    """Print an error as a boxed `.yaml` source frame — shared by compile and runtime errors.
+def _render_frame_box(text: str, marks, title: str) -> bool:
+    """Print ONE boxed `.yaml` source frame (no message). Returns whether a box was drawn.
 
-    `marks` are the 1-based offending lines: the panel shows the source around them with line
-    numbers and each mark highlighted (like a Python traceback's code box), titled
-    `title:line[,line...]`, with `message` in red below. The window stretches from the first to
-    the last mark (+ padding), so a multi-point error shows every implicated line. When no mark
-    is in range, prints a plain `title: message` line (no box)."""
+    `marks` are the 1-based offending lines; the panel shows the source around them with line
+    numbers and each mark highlighted, titled `title:line[,line...]`. Returns `False` (nothing
+    printed) when no mark is in range, so the caller can fall back to a plain line. Shared by
+    the single-frame render and the multi-frame call-traceback stack."""
     lines = text.splitlines()
     marks = sorted({m for m in marks if 1 <= m <= len(lines)})
     if not marks:
-        err_console.print(Text(f"{title}: ", style="red bold") + Text(message, style="red"))
-        return
+        return False
     start = max(1, marks[0] - _ERR_CONTEXT)
     end = min(len(lines), marks[-1] + _ERR_CONTEXT)
     frame = Syntax(
@@ -97,6 +97,18 @@ def _render_source_frame(text: str, marks, title: str, message: str) -> None:
     )
     panel_title = f"{title}:{','.join(str(m) for m in marks)}"
     err_console.print(Panel(frame, title=panel_title, title_align="left", border_style="red"))
+    return True
+
+
+def _render_source_frame(text: str, marks, title: str, message: str) -> None:
+    """Print an error as a boxed `.yaml` source frame + the message below (red).
+
+    Shared by compile and runtime single-frame errors: boxes the source around `marks`
+    (like a Python traceback's code box), then prints `message` under it. When no mark is in
+    range, prints a plain `title: message` line (no box)."""
+    if not _render_frame_box(text, marks, title):
+        err_console.print(Text(f"{title}: ", style="red bold") + Text(message, style="red"))
+        return
     err_console.print(Text(message, style="red"))
 
 
@@ -113,37 +125,179 @@ def _render_load_error(err: LoadError, flow: Path, text: str) -> None:
     _render_notes(err)
 
 
-def _render_run_error(result: RunResult, flow: Path, text: str) -> None:
+def _node_line(text: str, node_id: str) -> Optional[int]:
+    """Best YAML line for a node id: its kind's fallback sub-field (e.g. a code node's
+    `code:` line), else the node header. `None` when the id isn't an authored top-level node
+    (the parser only indexes top-level `nodes:`)."""
+    fields = node_field_lines(text).get(node_id, {})
+    for field_name in _KIND_FALLBACK_FIELDS:
+        if field_name in fields:
+            return fields[field_name]
+    return node_lines(text).get(node_id)
+
+
+def _last_segment(node_id: Optional[str]) -> Optional[str]:
+    """The final `/`-segment of a (possibly namespaced) id, with any `#<n>` map suffix
+    stripped (`gate#0/approve` -> `approve`). `None` for a `None` id."""
+    if node_id is None:
+        return None
+    return node_id.split("/")[-1].split("#", 1)[0]
+
+
+def _walk_call_frames(loaded, node_id: str, top_text: str, top_label: str,
+                      span: Optional[SourceSpan]):
+    """Walk a namespaced runtime node id through the baked IR, one source frame per segment.
+
+    A runtime failure inside a called child surfaces with a NAMESPACED id (`gate/approve` =
+    node `approve` inside the child the top-level `call` node `gate` invokes; `gate#0/inner`
+    for a map element). This walks the id segment-by-segment — frame 0 the top flow, then each
+    child a `call`/`map` descends into (a `defs:` callable or an external `uses:` file via the
+    node's render-only `child_source` `SourceFrame`) — down to the failing leaf.
+
+    Returns `list[(label, text, line)]`, most-recent-call-last (ready to render stacked). Each
+    frame's `label` names WHERE it lives: a top/external file frame is the filename alone; a
+    `defs:` child frame is filename-qualified (`<file> defs:<name>`) since its nodes physically
+    live in that file. A segment with NO authored line (a synthetic `__start__`/`__end__`/`__ask…`
+    runtime segment, or a collapsed compact single-node def) is SKIPPED — its frame is dropped, the
+    frames collected so far kept. Descent stops at the first segment that is not a call/map
+    with a baked child (the leaf), or when a segment can't be resolved. For the LAST segment a
+    `kind=field` locator (e.g. an `output:` coercion) is preferred, else the node's kind
+    fallback field (e.g. a code node's `code:`), else its header. Never raises — the caller
+    treats any failure as "no multi-frame stack" and falls back to the single-frame path."""
+    segments = [seg.split("#", 1)[0] for seg in node_id.split("/")]
+    nodes = loaded.compiled.nodes
+    n_lines = node_lines(top_text)
+    f_lines = node_field_lines(top_text)
+    text, label = top_text, top_label
+    current_file = top_label  # the display filename of the file the current frame lives in
+    frames: list[tuple[str, str, int]] = []
+    span_leaf = _last_segment(span.node) if span is not None else None
+
+    for i, seg in enumerate(segments):
+        is_last = i == len(segments) - 1
+        line: Optional[int] = None
+        fields = f_lines.get(seg, {})
+        if is_last:
+            # precise field locator (e.g. `output:` for a coercion / shape mismatch)
+            if span is not None and span.kind == "field" and span_leaf == seg:
+                line = fields.get(span.key)
+            if line is None:  # else the node's kind fallback (e.g. a code node's `code:`)
+                for fname in _KIND_FALLBACK_FIELDS:
+                    if fname in fields:
+                        line = fields[fname]
+                        break
+        if line is None:
+            line = n_lines.get(seg)  # the node header (None -> synthetic/unauthored: skip)
+        if line is not None:
+            frames.append((label, text, line))
+
+        # Descend into the child this segment calls, if any (else the leaf is reached).
+        node = nodes.get(seg)
+        if node is None:
+            break
+        child = getattr(node, "child", None)
+        src = getattr(node, "child_source", None)
+        if child is None or src is None:
+            break
+        nodes = child.nodes
+        text = src.text
+        n_lines, f_lines = src.node_lines, src.field_lines
+        # A `defs:` child physically lives in the CURRENT file -> qualify its frame title with
+        # that filename (`<file> defs:<name>`); an external `uses:` child is a different file,
+        # so its own filename becomes the current file and stands alone as the title.
+        if src.label.startswith("defs:"):
+            label = f"{current_file} {src.label}"
+        else:
+            current_file = src.label
+            label = src.label
+    return frames
+
+
+def _render_frame_stack(frames, message: str) -> None:
+    """Render a multi-frame call traceback (most-recent-call-last) + the message below.
+
+    Mirrors a Python traceback: a header, then one boxed `.yaml` frame per descended level
+    (outermost `call` first, the failing leaf last), then the error message in red."""
+    err_console.print(Text("call traceback (most recent call last):", style="red bold"))
+    for label, ftext, fline in frames:
+        _render_frame_box(ftext, [fline], label)
+    err_console.print(Text(message, style="red"))
+
+
+def _render_traceback(tb: str) -> None:
+    """Box the captured Python traceback below the error frame (only under `--engine-trace`).
+
+    The default error display stays terse (frame + message); this is the opt-in stack for
+    debugging a node's own code (a code/tool raise) or the engine."""
+    err_console.print(
+        Panel(
+            Text(tb.rstrip(), style="dim"),
+            title="python traceback",
+            title_align="left",
+            border_style="red",
+        )
+    )
+
+
+def _render_run_error(
+    result: RunResult, flow: Path, text: str, loaded=None, engine_trace: bool = False
+) -> None:
     """Print a runtime failure as a located `.yaml` frame at its PRECISE originating line.
 
     The failure's `SourceSpan` locator (from the last `NodeFailed`, or the flow-level
     `RunResult.locator` when no node is behind it) names exactly where the run broke — an
-    input binding, an assert expr, an input decl. The line is resolved by a three-step chain:
+    input binding, an assert expr, an input decl, an `output:` coercion.
+
+    When the failing node id is RUNTIME-NAMESPACED (a node inside a called child, e.g.
+    `gate/approve`) and the loaded IR is available, the error renders a **call traceback**: a
+    boxed frame per descended level — the top-level `call` node, then each child (`defs:` or
+    external `uses:` file) — down to the failing leaf, most-recent-call-last
+    (`_walk_call_frames`). With fewer than two frames it falls back to the single-frame box,
+    whose line is resolved by:
 
     1. the precise locator line (`_locate`);
     2. else, when a node is known, the best sub-line for its kind (`_KIND_FALLBACK_FIELDS`,
        e.g. a code node's `code:` line), then the node header (`node_lines`);
-    3. else a plain `run <status>: <message>` line (no frame).
-    """
+    3. else, when the node id is namespaced, the owning call node (the first path segment);
+    4. else a plain `run <status>: <message>` line (no frame).
+
+    When `engine_trace` is set and a Python traceback was captured (a code/tool/agent raise),
+    it is boxed below for debugging."""
     failed = [e for e in result.events if isinstance(e, NodeFailed)]
     nf = failed[-1] if failed else None
     span = nf.locator if nf is not None else getattr(result, "locator", None)
     node_id = nf.node_id if nf is not None else (span.node if span is not None else None)
     message = result.error or "(no detail)"
+    tb = getattr(result, "traceback", None)
+
+    # Multi-frame call traceback: when the failing id is namespaced (a node inside a called
+    # child) and we have the loaded IR, walk into the child(ren) and box a frame per level.
+    # The walk must never break error rendering -> any failure degrades to the single frame.
+    frames: list = []
+    if loaded is not None and node_id and "/" in node_id:
+        try:
+            frames = _walk_call_frames(loaded, node_id, text, flow.name, span)
+        except Exception:
+            frames = []
+    if len(frames) >= 2:
+        _render_frame_stack(frames, message)
+        if engine_trace and tb:
+            _render_traceback(tb)
+        return
 
     line = _locate(span, text)
     if line is None and node_id:
-        fields = node_field_lines(text).get(node_id, {})
-        for field_name in _KIND_FALLBACK_FIELDS:
-            if field_name in fields:
-                line = fields[field_name]
-                break
-        if line is None:
-            line = node_lines(text).get(node_id)
+        line = _node_line(text, node_id)
+        if line is None and "/" in node_id:
+            # a namespaced runtime id -> fall back to the owning top-level (call) node.
+            line = _node_line(text, node_id.split("/", 1)[0])
+
     if line is None:
         err_console.print(f"[red]run {result.status}: {message}[/red]")
-        return
-    _render_source_frame(text, [line], flow.name, message)
+    else:
+        _render_source_frame(text, [line], flow.name, message)
+    if engine_trace and tb:
+        _render_traceback(tb)
 
 
 def _render_notes(err: LoadError) -> None:
@@ -326,6 +480,7 @@ def _prompt_missing(decls: List[Any], have: Dict[str, Any]) -> Optional[Dict[str
     (see `_input_label`)."""
     import questionary
 
+    style = _q_style()
     gathered: Dict[str, Any] = {}
     for decl in decls:
         if decl.name in have:
@@ -333,12 +488,16 @@ def _prompt_missing(decls: List[Any], have: Dict[str, Any]) -> Optional[Dict[str
         label = _input_label(decl)
         shape = decl.shape
         if shape.seg_type == SegmentType.BOOLEAN:
-            value = questionary.confirm(label, default=bool(decl.default)).ask()
+            value = questionary.confirm(
+                label, default=bool(decl.default), qmark="?", style=style
+            ).ask()
         elif shape.tags:  # a Literal[...] enum
-            value = questionary.select(label, choices=sorted(shape.tags)).ask()
+            value = questionary.select(
+                label, choices=sorted(shape.tags), qmark="?", style=style
+            ).ask()
         else:
             default = "" if decl.default is None else str(decl.default)
-            value = questionary.text(label, default=default).ask()
+            value = questionary.text(label, default=default, qmark="?", style=style).ask()
 
         if value is None:  # Ctrl-C / Esc
             return None
@@ -349,8 +508,38 @@ def _prompt_missing(decls: List[Any], have: Dict[str, Any]) -> Optional[Dict[str
 
 
 # sentinel choice appended to every question's option list — selecting it routes to a
-# free-text prompt so the human can answer outside the offered labels.
-_OTHER = "Other"
+# free-text prompt so the human can answer outside the offered labels. The arrow marks it
+# visually as the escape hatch rather than a literal option.
+_OTHER = "✎ Other (write your own)"
+
+# cached questionary Style so every interactive prompt (missing inputs + human_input
+# questions) shares one palette: a cyan accent for the marker/pointer/answer, a green tick
+# for multi-select, dimmed instructions. Built lazily because `questionary` is imported
+# inside the prompting functions (it pulls in prompt_toolkit, kept off the import path of
+# non-interactive runs). `None` until first built.
+_Q_STYLE: Any = None
+
+
+def _q_style() -> Any:
+    """Return the shared `questionary.Style`, building (and caching) it on first use."""
+    global _Q_STYLE
+    if _Q_STYLE is None:
+        import questionary
+
+        _Q_STYLE = questionary.Style(
+            [
+                ("qmark", "fg:#00afff bold"),
+                ("question", "bold"),
+                ("answer", "fg:#00afff bold"),
+                ("pointer", "fg:#00afff bold"),
+                ("highlighted", "fg:#00afff bold"),
+                ("selected", "fg:#5faf5f"),
+                ("separator", "fg:#6c6c6c"),
+                ("instruction", "fg:#6c6c6c italic"),
+                ("text", ""),
+            ]
+        )
+    return _Q_STYLE
 
 
 def assemble_question_answers(questions, ask):
@@ -368,42 +557,60 @@ def assemble_question_answers(questions, ask):
     return record
 
 
-def _ask_question(question):
+def _ask_question(question, index=None, total=None):
     """Elicit one question via questionary; return its answer (str, list[str], or None).
 
-    Decorated choices ("label — description") are rendered for display but mapped back to
-    the bare `label` so the returned value is always the bare label, never the hint string.
-    An "Other" escape is always offered; choosing it routes to a free-text prompt. Returns
-    `None` on cancel (questionary `.ask()` yields None on Ctrl-C/Esc), which the caller
-    treats like the legacy path — stay paused."""
+    `index`/`total` (1-based, optional) drive a styled "Question N of M · <header>" rule
+    printed above the widget so a multi-question pause reads as a numbered sequence; omit
+    them (the default) for a bare single prompt. Decorated choices ("label — description")
+    are rendered for display but mapped back to the bare `label` so the returned value is
+    always the bare label, never the hint string. An "Other" escape is always offered;
+    choosing it routes to a free-text prompt. Returns `None` on cancel (questionary
+    `.ask()` yields None on Ctrl-C/Esc), which the caller treats like the legacy path —
+    stay paused."""
     import questionary
 
     text = question["question"]
     options = question.get("options") or []
 
+    # A styled separator naming the question's position + answer key, so the human can map
+    # each prompt back to the record it fills (the answer is keyed by `header`).
+    if index is not None and total is not None:
+        header = question.get("header") or ""
+        title = f"[bold]Question {index} of {total}[/bold]"
+        if header:
+            title += f" [dim]· {header}[/dim]"
+        err_console.print()
+        err_console.print(Rule(title, style="cyan", align="left"))
+
+    style = _q_style()
+
     # free-text-only question: no choices, just elicit a string.
     if not options:
-        return questionary.text(text).ask()
+        return questionary.text(text, qmark="?", style=style).ask()
 
     # map each displayed choice back to its bare label so the return value is the label.
+    # The em-dash keeps the label visually distinct from its hint in the choice list.
     display_to_label = {}
     choices = []
     for opt in options:
         label = opt["label"]
         desc = opt.get("description") or ""
-        display = f"{label} — {desc}" if desc else label
+        display = f"{label}  —  {desc}" if desc else label
         display_to_label[display] = label
         choices.append(display)
     choices.append(_OTHER)
 
     if question.get("multi_select"):
-        picked = questionary.checkbox(text, choices=choices).ask()
+        picked = questionary.checkbox(
+            text, choices=choices, qmark="?", style=style
+        ).ask()
         if picked is None:  # cancelled
             return None
         labels = []
         for chosen in picked:
             if chosen == _OTHER:
-                other = questionary.text("Other:").ask()
+                other = questionary.text("Your answer", qmark="✎", style=style).ask()
                 if other is None:
                     return None
                 labels.append(other)
@@ -411,11 +618,13 @@ def _ask_question(question):
                 labels.append(display_to_label[chosen])
         return labels
 
-    chosen = questionary.select(text, choices=choices).ask()
+    chosen = questionary.select(
+        text, choices=choices, qmark="?", style=style, use_indicator=True
+    ).ask()
     if chosen is None:  # cancelled
         return None
     if chosen == _OTHER:
-        return questionary.text("Other:").ask()
+        return questionary.text("Your answer", qmark="✎", style=style).ask()
     return display_to_label[chosen]
 
 
@@ -439,22 +648,45 @@ def _resume_to_terminal(
         for reason in result.pause_reasons:
             if reason.type == "human_input_required":
                 if reason.questions:
+                    # A boxed intro names the node + how many answers are awaited, then each
+                    # question renders as a numbered, keyed prompt below it.
+                    title = reason.node_title or reason.node_id or "this step"
+                    n = len(reason.questions)
+                    intro = Text()
+                    intro.append("Your input is needed for ", style="bold")
+                    intro.append(str(title), style="bold cyan")
                     if reason.prompt:
-                        err_console.print(reason.prompt)
-                    # questions form: render each, assemble a {header: answer} record.
-                    record = assemble_question_answers(reason.questions, _ask_question)
+                        intro.append("\n")
+                        intro.append(reason.prompt)
+                    plural = "question" if n == 1 else "questions"
+                    intro.append(f"\n\n{n} {plural} to answer.", style="dim")
+                    err_console.print(
+                        Panel(intro, border_style="cyan", expand=False, title="human input")
+                    )
+                    # questions form: render each (numbered), assemble a {header: answer}
+                    # record. The closure threads 1-based position/total into the renderer
+                    # while keeping `assemble_question_answers` a pure single-arg seam.
+                    total = len(reason.questions)
+                    seq = itertools.count(1)
+                    record = assemble_question_answers(
+                        reason.questions,
+                        lambda q: _ask_question(q, index=next(seq), total=total),
+                    )
                     if any(v is None for v in record.values()):
                         return result  # cancelled — stay paused
                     answered.append((reason, record))
                 else:
                     label = reason.prompt or f"input for {reason.node_id}"
-                    answer = questionary.text(label).ask()
+                    answer = questionary.text(label, qmark="?", style=_q_style()).ask()
                     if answer is None:
                         return result  # cancelled — stay paused
                     answered.append((reason, answer))
             elif reason.type == "scheduled_pause":
                 if not questionary.confirm(
-                    f"{reason.node_id}: release the wait now?", default=True
+                    f"{reason.node_id}: release the wait now?",
+                    default=True,
+                    qmark="?",
+                    style=_q_style(),
                 ).ask():
                     return result
                 answered.append((reason, None))  # release: value=None
@@ -500,8 +732,9 @@ def run(
     engine_trace: bool = typer.Option(
         False,
         "--engine-trace",
-        help="On a compile error, also print the engine Python traceback (for debugging "
-        "the engine itself); by default only the located `.yaml` error is shown.",
+        help="On a compile error OR a runtime node failure, also print the engine Python "
+        "traceback (for debugging the engine itself); by default only the located `.yaml` "
+        "error is shown.",
     ),
 ) -> None:
     """Run a flow to completion and print its output."""
@@ -567,5 +800,5 @@ def run(
     else:
         # A node failure points at WHERE in the `.yaml` it raised (boxed frame), mirroring a
         # compile error; a node-less failure (assert/input-coercion) prints the plain message.
-        _render_run_error(result, flow, text)
+        _render_run_error(result, flow, text, loaded=loaded, engine_trace=engine_trace)
         raise typer.Exit(code=1)

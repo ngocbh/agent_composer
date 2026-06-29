@@ -700,6 +700,7 @@ def build_call_node(desc: CallDescriptor, resolver: ChildResolver) -> tuple[Node
             child=child.compiled,
             child_inputs=child.input,
             child_asserts=child.asserts,
+            child_source=child.source,        # render-only; the CLI nested-error traceback
             parallel=desc.parallel,           # inert; carried for the over case only
             title=desc.node_name,
         )
@@ -720,6 +721,7 @@ def build_call_node(desc: CallDescriptor, resolver: ChildResolver) -> tuple[Node
             child=child.compiled,
             child_inputs=child.input,
             child_asserts=child.asserts,
+            child_source=child.source,        # render-only; the CLI nested-error traceback
             title=desc.node_name,
         )
         node.params = _sink_params(desc.inputs)

@@ -138,6 +138,12 @@ ac run FLOW.yaml [--input k=v]... [--inputs inputs.json] [--quiet] [--verbose] [
   edges that close the loop) titled `file:line`, with the message below — instead of an
   engine traceback; `--engine-trace` adds the Python traceback for debugging the engine
   itself.
+- A **runtime** failure boxes the `.yaml` at the line it originated from. When the failing
+  node is inside a *called child flow* (a `defs:` callable or an external `uses:` file), the
+  CLI prints a **call traceback** — a stack of boxed frames most-recent-call-last, like a
+  Python traceback: the top-level `call` node, then each child it descends into (an in-file
+  `<file> defs:<name>` frame, or a frame titled by the external file's name), down to the
+  actual node that failed.
 
 ### Choosing a provider/model
 

@@ -40,6 +40,9 @@ class CallNode(Node):
             The child's input decls, read by compile validation and the boundary-assert temp pool.
         child_asserts (`Any`, *optional*, defaults to `None`):
             The child's baked boundary asserts.
+        child_source (`Any`, *optional*, defaults to `None`):
+            The child flow's render-only `SourceFrame` (label + node-line maps). Carried
+            for the CLI's nested-error traceback only; `run` ignores it entirely.
         title (`str`, *optional*, defaults to `None`):
             Display title.
     """
@@ -48,13 +51,15 @@ class CallNode(Node):
 
     def __init__(self, node_id: str, *, flow_id: str, flow_version: Optional[int] = None,
                  child: Any = None, child_inputs: Optional[list] = None, child_asserts: Any = None,
-                 title: Optional[str] = None) -> None:
+                 child_source: Any = None, title: Optional[str] = None) -> None:
         super().__init__(node_id, title=title)
         self.flow_id = flow_id
         self.flow_version = flow_version
         self.child = child
         self.child_inputs = child_inputs or []
         self.child_asserts = child_asserts
+        # Render-only: the child's SourceFrame for the CLI error traceback. `run` never reads it.
+        self.child_source = child_source
 
     def run(self, inputs: dict, **caps: Any):
         if self.child is None:

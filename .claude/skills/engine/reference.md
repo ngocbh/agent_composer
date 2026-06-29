@@ -144,6 +144,21 @@ resolved to a line at the CLI boundary — never a text heuristic.
   `assert_lines`, `input_decl_lines`) map a span to a 1-based line; the CLI's `_locate`
   + fallback chain (precise line → node-kind best field, e.g. a code node's `code:` →
   node header → plain message) boxes it.
+- **Cross-flow call traceback** — when a failure is inside a *called child*, its node id is
+  runtime-NAMESPACED (`gate/approve`, `outer/via/boom`, `gate#0/inner` for a map element).
+  A `call`/`map` node bakes its child flow's render-only **`SourceFrame`** (`compose/loader`:
+  label + source text + node→line / field→line maps) onto `child_source` at load — for a
+  `defs:` child the text is the PARENT file (inner nodes at their absolute parent lines, via
+  `def_node_lines`); for an external `uses:` child it is that file's own text, label = its
+  filename. The frame is frozen and `__deepcopy__`-returns-self, so `clone_child`'s per-callsite
+  deep-copy shares the one instance and it is exempt from the node-purity scan (it carries raw
+  `${...}` YAML, but is metadata, not a wiring source). At error time `cli/run.py:_walk_call_frames`
+  splits the namespaced id and walks segment-by-segment through the baked IR
+  (`node.child`/`node.child_source`), collecting one frame per level; `_render_run_error` boxes
+  them stacked, most-recent-call-last (Python-traceback style), falling back to the single-frame
+  box when fewer than two frames resolve. A frame title names WHERE it lives: a top/external file
+  frame is the filename alone, a `defs:` frame is filename-qualified (`<file> defs:<name>`) since
+  its nodes physically live in that file.
 
 ## Design-note template (step 3 of the workflow)
 

@@ -111,12 +111,16 @@ class NodeExecutionError(RuntimeError):
         error: str,
         error_type: str = "",
         locator: Optional[SourceSpan] = None,
+        traceback: Optional[str] = None,
     ) -> None:
         super().__init__(f"node {node_id!r} failed: {error}")
         self.node_id = node_id
         self.error = error
         self.error_type = error_type
         self.locator = locator
+        # Formatted Python traceback of the raising call, carried from the NodeFailed event
+        # so run() can attach it to RunFailed (CLI surfaces it under `--engine-trace`).
+        self.traceback = traceback
 
 
 class FlowEngine:
@@ -228,7 +232,8 @@ class FlowEngine:
             except _Aborted:
                 yield RunAborted(); return
             except NodeExecutionError as exc:
-                yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator); return
+                yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator,
+                                traceback=exc.traceback); return
             if self.paused:
                 yield RunPaused(reasons=[reason for _, reason in self.paused]); return
             yield self._terminal_event(); return
@@ -252,7 +257,8 @@ class FlowEngine:
         except _Aborted:
             terminal = RunAborted()
         except NodeExecutionError as exc:
-            terminal = RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator)
+            terminal = RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator,
+                                 traceback=exc.traceback)
         finally:
             self._stop.set()
             for w in workers:
@@ -440,7 +446,8 @@ class FlowEngine:
             for command in commands or []:
                 self._apply_command(command)
         except NodeExecutionError as exc:
-            yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator)
+            yield RunFailed(error=exc.error, error_type=exc.error_type, locator=exc.locator,
+                            traceback=exc.traceback)
             return
         seed = list(self.deferred) + list(self.ready)
         self.paused = []
@@ -496,7 +503,8 @@ class FlowEngine:
             elif isinstance(event, NodeFailed):
                 self.sm.finish_executing(node_id)
                 raise NodeExecutionError(
-                    node_id, event.error, event.error_type, locator=event.locator
+                    node_id, event.error, event.error_type, locator=event.locator,
+                    traceback=event.traceback,
                 )
             elif isinstance(event, PauseRequested):
                 self._on_pause(node_id, event.reason)

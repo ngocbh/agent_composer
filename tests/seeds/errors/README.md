@@ -54,6 +54,9 @@ just what can.
 | `e22-required-missing.yaml` | `${x:?msg}` on an omitted value (run with it omitted) | `:?` use-site required |
 | `e23-unknown-tool.yaml` | a TOOL node naming an unregistered `tool_id` | TOOL registry lookup |
 | `e08-input-type-mismatch.yaml` | a non-coercible input value for a declared type (run `window: "soon"`) | typed read boundary (mirror of e21) |
+| `e24-nested-code-raise.yaml` | a CODE callable that raises INSIDE a called child (namespaced node id `run/boom`) | CLI error framing → owning-call fallback + `--engine-trace` |
+| `e25-external-raise.yaml` (+ `lib_boom.yaml`) | a CODE callable that raises inside an EXTERNAL `uses:` flow (`go/kaboom`) | multi-frame call traceback across a file boundary |
+| `e26-three-level-raise.yaml` | a CODE callable that raises three levels deep (call → def → def, `outer/via/boom`) | multi-frame call traceback, ≥3 stacked frames |
 
 ## Deferred (`_future/errors/`, until the check lands)
 

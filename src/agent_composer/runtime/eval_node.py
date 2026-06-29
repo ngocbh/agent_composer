@@ -26,6 +26,7 @@ bad `over`/binding surfaces the over/bind error before the not-baked guard (load
 
 import copy
 import inspect
+import traceback as _tb
 from dataclasses import replace
 from typing import Any
 
@@ -128,7 +129,11 @@ def eval_node(node, flow, pool: TypedVariablePool):
         loc = getattr(exc, "locator", None)
         if loc is not None and loc.node is None:
             loc = replace(loc, node=node.id)
-        yield NodeFailed(node.id, error=str(exc), error_type=type(exc).__name__, locator=loc)
+        # Capture the full formatted traceback here, while the exception is live, so the CLI
+        # can surface the raising call's Python stack under `--engine-trace`. The terse
+        # default (message + boxed YAML frame) never shows it.
+        yield NodeFailed(node.id, error=str(exc), error_type=type(exc).__name__, locator=loc,
+                         traceback=_tb.format_exc())
         return
 
     if isinstance(result, Pause):

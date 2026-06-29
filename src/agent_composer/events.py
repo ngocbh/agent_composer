@@ -97,6 +97,10 @@ class NodeFailed:
     # an assert expr); None when no sub-line is determinable (a code raise) -> the
     # CLI falls back to the node's best sub-line / header.
     locator: Optional[SourceSpan] = None
+    # The formatted Python traceback of the raising call, captured at the node-failure
+    # boundary. None for failures synthesized without an exception (e.g. an assert that did
+    # not hold). Surfaced by the CLI only under `--engine-trace`.
+    traceback: Optional[str] = None
 
 
 @dataclass
@@ -159,6 +163,11 @@ class RunFailed:
     # Flow-level precise location (a boundary assert expr, a failed input decl);
     # None when not determinable -> the CLI falls back to a plain message.
     locator: Optional[SourceSpan] = None
+    # The formatted Python traceback of the originating node failure, if one was captured
+    # (carried up from the aborting `NodeFailed`). None for flow-level failures with no
+    # exception behind them (boundary assert / input coercion). CLI shows it under
+    # `--engine-trace`.
+    traceback: Optional[str] = None
 
 
 @dataclass

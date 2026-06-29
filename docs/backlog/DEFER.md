@@ -154,9 +154,13 @@ the checkpoint would remove that host obligation but couples the persisted run t
 
 ## Doc deferrals
 
-- [ ] **defs-internal error line-mapping** — a nested def's internal errors are unlocated (top-level
+- [x] ~~**defs-internal error line-mapping** — a nested def's internal errors are unlocated (top-level
   stays located); compute nested line maps from the parent compose tree later. (Hard, low value.)
-  Same class: synth inline-call downstream errors are unlocated.
+  Same class: synth inline-call downstream errors are unlocated.~~ -- DONE: a namespaced node failure
+  now renders a Python-traceback-style STACK of boxed `.yaml` frames descending into the `defs:` /
+  external `uses:` child down to the ACTUAL failing node (not just the owning call node) — parser
+  `def_node_lines`/`def_node_field_lines` + a render-only `SourceFrame` on each call/map node's
+  `child_source`, walked by `cli/run.py:_walk_call_frames`. See TODO "Multi-frame call traceback".
 
 - [ ] **Line-precise vs. node-precise compile-error highlight.** The CLI renders a `LoadError` as a
   boxed `.yaml` source frame with the offending line highlighted (`cli/run.py:_render_load_error`,

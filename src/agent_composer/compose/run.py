@@ -102,6 +102,10 @@ class RunResult:
     output: Any = None
     error: Optional[str] = None
     locator: Optional[SourceSpan] = None
+    # Formatted Python traceback of the node that aborted the run, when one was captured
+    # (a code/tool/agent raise). None for failures with no exception behind them (a boundary
+    # or post assert, input coercion). The CLI prints it only under `--engine-trace`.
+    traceback: Optional[str] = None
     events: List[Any] = field(default_factory=list)
     checkpoint: Optional[Any] = None
     engine: Optional[Any] = None
@@ -191,6 +195,7 @@ def run_flow(
     output: Any = None
     error: Optional[str] = None
     result_locator: Optional[SourceSpan] = None  # flow-level location (no NodeFailed behind it)
+    tb: Optional[str] = None  # Python traceback of the aborting node, if one was captured
 
     for event in engine.run():
         if on_event is not None:
@@ -204,6 +209,7 @@ def run_flow(
             elif isinstance(event, RunFailed):
                 error = event.error
                 result_locator = event.locator  # boundary assert / input-coercion (Step 8)
+                tb = event.traceback
 
     # A paused run carries the resume handles: the live engine (fast in-process),
     # a serializable checkpoint (durable), and the pause reasons.
@@ -230,7 +236,7 @@ def run_flow(
 
     return RunResult(
         input=coerced, status=status, output=output, error=error,
-        locator=result_locator, events=events,
+        locator=result_locator, traceback=tb, events=events,
     )
 
 
@@ -301,6 +307,7 @@ def resume_flow(
     events: List[Any] = []
     status, output, error = "incomplete", None, None
     result_locator: Optional[SourceSpan] = None  # flow-level location (no NodeFailed behind it)
+    tb: Optional[str] = None  # Python traceback of the aborting node, if one was captured
     for event in engine.resume(commands or []):
         if on_event is not None:
             on_event(event)
@@ -313,6 +320,7 @@ def resume_flow(
             elif isinstance(event, RunFailed):
                 error = event.error
                 result_locator = event.locator
+                tb = event.traceback
 
     if status == "paused":
         paused = [e for e in events if isinstance(e, RunPaused)]
@@ -333,7 +341,7 @@ def resume_flow(
 
     return RunResult(
         input={}, status=status, output=output, error=error,
-        locator=result_locator, events=events,
+        locator=result_locator, traceback=tb, events=events,
     )
 
 

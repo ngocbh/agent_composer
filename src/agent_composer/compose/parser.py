@@ -643,8 +643,34 @@ def node_lines(text: str) -> dict[str, int]:
     Mirrors `_top_level_lines`: composes the document, descends into the `nodes:`
     mapping, and records each node-key's line. Returns {} if PyYAML can't compose.
     """
-    nodes = _nodes_mapping(text)
-    if nodes is None:
+    return _node_lines_of(_nodes_mapping(text))
+
+
+def _find_mapping_child(mapping, name: str):
+    """The MappingNode value of key `name` inside `mapping`, or None.
+
+    Shared scan over a composed MappingNode's `(key, value)` pairs. Returns None when
+    `mapping` is None/not a mapping or `name` is absent / not itself a mapping.
+    """
+    if not isinstance(mapping, yaml.MappingNode):
+        return None
+    for key_node, value_node in mapping.value:
+        if (
+            isinstance(key_node, yaml.ScalarNode)
+            and key_node.value == name
+            and isinstance(value_node, yaml.MappingNode)
+        ):
+            return value_node
+    return None
+
+
+def _node_lines_of(nodes) -> dict[str, int]:
+    """Map node id -> 1-based line for the entries of a `nodes:` MappingNode.
+
+    The shared extraction behind `node_lines` (top-level) and `def_node_lines` (each
+    def's inner `nodes:`). Returns {} when `nodes` is None.
+    """
+    if not isinstance(nodes, yaml.MappingNode):
         return {}
     return {
         k.value: k.start_mark.line + 1
@@ -653,8 +679,33 @@ def node_lines(text: str) -> dict[str, int]:
     }
 
 
+def _node_field_lines_of(nodes) -> dict[str, dict[str, int]]:
+    """Map node id -> {field name -> 1-based line} for a `nodes:` MappingNode.
+
+    The shared extraction behind `node_field_lines` (top-level) and
+    `def_node_field_lines` (each def's inner `nodes:`). The legacy plural `outputs:`
+    spelling is aliased to `output` so the locator key stays canonical. Returns {}
+    when `nodes` is None.
+    """
+    if not isinstance(nodes, yaml.MappingNode):
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for nid, body in nodes.value:
+        if not (isinstance(nid, yaml.ScalarNode) and isinstance(body, yaml.MappingNode)):
+            continue
+        fields = {
+            fk.value: fk.start_mark.line + 1
+            for fk, _ in body.value
+            if isinstance(fk, yaml.ScalarNode)
+        }
+        if "outputs" in fields:
+            fields.setdefault("output", fields["outputs"])
+        out[nid.value] = fields
+    return out
+
+
 def _nodes_mapping(text: str):
-    """The `nodes:` MappingNode of a composed flow, or None (best-effort).
+    """The top-level `nodes:` MappingNode of a composed flow, or None (best-effort).
 
     Shared by the sub-line maps below; returns None when PyYAML can't compose the
     document, the root isn't a mapping, or there is no `nodes:` mapping (a compact
@@ -664,16 +715,65 @@ def _nodes_mapping(text: str):
         root = yaml.compose(text)
     except yaml.YAMLError:
         return None
-    if not isinstance(root, yaml.MappingNode):
+    return _find_mapping_child(root, "nodes")
+
+
+def _defs_mapping(text: str):
+    """The top-level `defs:` MappingNode of a composed flow, or None (best-effort).
+
+    Returns None when PyYAML can't compose, the root isn't a mapping, or there is no
+    `defs:` mapping (a flow with no in-file callables).
+    """
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
         return None
-    for key_node, value_node in root.value:
-        if (
-            isinstance(key_node, yaml.ScalarNode)
-            and key_node.value == "nodes"
-            and isinstance(value_node, yaml.MappingNode)
-        ):
-            return value_node
-    return None
+    return _find_mapping_child(root, "defs")
+
+
+def def_node_lines(text: str) -> dict[str, dict[str, int]]:
+    """Map each `defs:<name>` -> {inner node id -> 1-based line} (best-effort).
+
+    Descends the top-level `defs:` mapping and, for every def entry carrying its own
+    `nodes:` mapping, records its inner node ids. A compact single-node def (a
+    top-level `kind:` with no `nodes:`) is absent from the result: its sole node is
+    synthesized in-memory at load, so there is no authored inner line to point at.
+    Defs are syntactically flat (a def referenced only by another def still lives
+    under `defs:<name>:nodes:`), so every callable is indexed. Returns {} when
+    uncomposable or there is no `defs:` section.
+    """
+    defs = _defs_mapping(text)
+    if defs is None:
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for name_node, body in defs.value:
+        if not (isinstance(name_node, yaml.ScalarNode) and isinstance(body, yaml.MappingNode)):
+            continue
+        nodes = _find_mapping_child(body, "nodes")
+        if nodes is not None:
+            out[name_node.value] = _node_lines_of(nodes)
+    return out
+
+
+def def_node_field_lines(text: str) -> dict[str, dict[str, dict[str, int]]]:
+    """Map each `defs:<name>` -> {inner node id -> {field -> 1-based line}}.
+
+    The def-internal parallel of `node_field_lines` — used to point the error frame
+    at a specific field (e.g. `output:`) of a node inside a def. Same compact-def
+    omission and flat-defs coverage as `def_node_lines`. Returns {} when uncomposable
+    or there is no `defs:` section.
+    """
+    defs = _defs_mapping(text)
+    if defs is None:
+        return {}
+    out: dict[str, dict[str, dict[str, int]]] = {}
+    for name_node, body in defs.value:
+        if not (isinstance(name_node, yaml.ScalarNode) and isinstance(body, yaml.MappingNode)):
+            continue
+        nodes = _find_mapping_child(body, "nodes")
+        if nodes is not None:
+            out[name_node.value] = _node_field_lines_of(nodes)
+    return out
 
 
 def _section_mapping(text: str, *names: str):
@@ -736,22 +836,7 @@ def node_field_lines(text: str) -> dict[str, dict[str, int]]:
     `outputs:` spelling is aliased to `output` so the locator key stays canonical.
     Best-effort: {} when uncomposable.
     """
-    nodes = _nodes_mapping(text)
-    if nodes is None:
-        return {}
-    out: dict[str, dict[str, int]] = {}
-    for nid, body in nodes.value:
-        if not (isinstance(nid, yaml.ScalarNode) and isinstance(body, yaml.MappingNode)):
-            continue
-        fields = {
-            fk.value: fk.start_mark.line + 1
-            for fk, _ in body.value
-            if isinstance(fk, yaml.ScalarNode)
-        }
-        if "outputs" in fields:
-            fields.setdefault("output", fields["outputs"])
-        out[nid.value] = fields
-    return out
+    return _node_field_lines_of(_nodes_mapping(text))
 
 
 def assert_lines(text: str) -> dict[tuple[Optional[str], str], int]:
