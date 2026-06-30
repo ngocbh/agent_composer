@@ -28,13 +28,13 @@ This directory (`docs/backlog/`) is tracked in git and published in the doc site
 
 - **Parallel/cross-process durable resume** — durable resume *inside* a `parallel:true` `MAP` /
   parallel graph / ref'd subflow. Needs the host resume seam + parallel-engine snapshot/resume +
-  nested-suspension-through-reference.
+  nested-suspension-through-reference. \ngoc{do we need this now?}
 - **Durable channel impls** — Redis or Mongo-collection `ReadyQueue` + `CommandChannel`, injected from
   outside the core; the watcher/scheduler that pokes suspended runs.
 - **Error strategies** — retry / fail-branch / default-value as an engine-side seam, **with per-node
   typed-error hierarchies** (a `<Node>Error` base + per-kind subclasses; the strategy dispatches on
   failure *type*, not a boundary string). Add an `exc.py` only to multi-failure-mode nodes
-  (agent/code/ref/model).
+  (agent/code/ref/model). \ngoc{this is important}
 
 ## Integration / providers / serving
 
@@ -42,11 +42,11 @@ This directory (`docs/backlog/`) is tracked in git and published in the doc site
   tools (e.g. `call_subagent`). Today: `plain` + `tool_calling`; `ask_user` done.
 - **MODEL serving seam** — re-introduce an injected `model_runtime(ctx)->value` (threaded
   load→run→build, into reference/MAP children) when real ML serving lands; the MODEL kind exists but
-  `run` raises today (the dead seam was removed).
+  `run` raises today (the dead seam was removed). \ngoc{maybe we just remove MODEL node? it either be API call if it's deployed or code node if it's run locally?}
 - **Token streaming** — an agent-strategy that yields `StreamChunk` per token through the loop (the
   node already drains generator strategies; needs a streaming `complete`). CLI: token-stream the
   tool-calling final answer once tools resolve.
 - **`vllm` provider** — finish wiring (a `model_catalog` entry + CLI endpoint-confirm mirroring the
   ollama `confirm_ollama_endpoint` path) so vLLM shows in the picker.
 - **Run-history UI** — a `/runs` browser over written run transcripts; durable-run surfacing — pairs
-  with the server.
+  with the server. \ngoc{what is this?}
