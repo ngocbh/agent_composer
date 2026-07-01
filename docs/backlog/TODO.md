@@ -39,8 +39,6 @@ under "Roadmap".
 
 - [ ] add isinstance(${var}, Shape) type check builtin function so the assert can check the shape again if needed @ngocbh
 
-- [ ] rename ifelsenode to CaseNode for consistency
-
 ## Structured AGENT output — follow-ups
 
 The core structured-output work (declare → generate → enforce → retry) shipped; see

@@ -15,6 +15,11 @@ This backlog is split four ways:
 
 ## Engine
 
+- [x] ~~rename ifelsenode to CaseNode for consistency~~ -- b5004a2
+  Internal-only rename: `IfElseNode` -> `CaseNode`, `NodeKind.IF_ELSE` -> `NodeKind.CASE` (value
+  `"if_else"` -> `"case"`), module `nodes/if_else/` -> `nodes/case/`. The YAML authoring surface was
+  already `kind: case`, so nothing author-facing changed.
+
 - [x] ~~**Compact mode — a single-node flow authored inline (flow *is* the node).** Let an author
   collapse the common "one flow, one node" case so they don't have to write a `nodes:` map + a
   redundant `output: ${greet.output}` wiring step. The parser detects the compact shape (a node
